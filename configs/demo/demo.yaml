@@ -1,0 +1,53 @@
+# WorldCast Live: the demo's settings (docs/demo.md, "Config"). Every value is the default in demo/config.py.
+# Override on the command line with --set key=value, or merge a second file with another --config.
+
+library: null                     # library.json of round starts (tools/build_demo_library.py); null = synthetic arena
+
+coordinator:
+  host: 0.0.0.0
+  port: 8100
+  media_route: direct             # direct: browsers open the worker's WebSocket; proxy: through the coordinator
+  max_rooms: 32
+  scene_blocks_per_player: 64     # scene-state blocks kept per player for late joiners (B)
+  empty_room_s: 120.0
+
+worker:
+  host: 0.0.0.0
+  port: 8101
+  coordinator_url: ws://127.0.0.1:8100
+  advertise_url: null             # e.g. ws://gpu-07.lan:8101; null = the address the worker connects from
+  worker_id: null                 # default <hostname>:<port>
+  gpu_label: null
+  jpeg_quality: 85
+  reconnect_grace_s: 8.0
+  lockstep_timeout_s: 3.0
+
+engine:
+  kind: mock                      # mock (no GPU) | worldcast (worldcast.engine.realtime on a GPU)
+  mock:
+    frames_per_step: 4            # frames per step; the paper's block is 16 (4 latents)
+    step_ms: 180.0                # fake denoising per step
+    decode_ms: 4.0                # fake decoding per frame
+    jitter_ms: 15.0
+    scene_block_frames: 16        # one scene-state block per 16 frames, as on the paper engine
+    scene_block_bytes: 774144     # 4 x 48 x 24 x 42 float32 latents
+  worldcast:
+    configs: []                   # the inference YAMLs: configs/infer/worldcast_4step.yaml, weights/paths.yaml, ...
+    overrides: {}                 # dotted keys of those, e.g. {run.device: cuda}
+    realtime:                     # worldcast.engine.realtime.RealtimeConfig (the low-latency settings)
+      generator: fast
+      cuda_graphs: true
+      early_prefill: true
+      decode_overlap: true
+      encoder: jpeg
+      decoder: taehv              # tiny VAE: 3.3 ms per latent frame on an H20 (the Wan2.2 VAE: 360 ms)
+      taehv_path: weights/taew2_2.pth
+      lockstep: false             # the demo's room sync decides; see docs/demo.md
+    own_state: gt                 # gt (recorded positions) | state_model (closed loop, needs paths.state_model)
+
+play:
+  fps: 16.0
+  jitter_buffer_frames: 2
+  action_mapping: latest          # latest (lowest latency) | realtime (keeps timing inside a block)
+  mouse_degrees_per_pixel: 0.055
+  default_sync: async             # async (peers' latest states, extrapolated) | lockstep (the paper's evaluation)

@@ -1,0 +1,9 @@
+# WorldCast Live (docs/demo.md; pyproject.toml extra "demo"). The coordinator and the mock workers need only
+# these; GPU workers also need the package itself with its CUDA stack (README, "Install").
+aiohttp>=3.9
+numpy>=1.24
+pillow>=10
+pyyaml>=6.0
+# tools/build_demo_library.py only
+imageio-ffmpeg>=0.4.9
+pyarrow>=14

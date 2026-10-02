@@ -1,0 +1,64 @@
+WorldCast
+Copyright 2026 The WorldCast Authors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE). This product includes software
+derived from the third-party projects listed below. Details, the files concerned and the full
+license texts are in THIRD_PARTY_LICENSES.md.
+
+Wan2.2 (https://github.com/Wan-Video/Wan2.2)
+  Copyright 2024-2025 The Alibaba Wan Team Authors. Apache License 2.0.
+  Derived code in worldcast/modeling/wan22/model.py, worldcast/modeling/wan22/attention.py,
+  worldcast/modeling/wan22/vae.py and worldcast/modeling/wan22/text_encoder.py. The umT5 encoder follows Wan2.2's
+  wan/modules/t5.py, itself modified from Hugging Face Transformers
+  (transformers.models.t5.modeling_t5), Apache License 2.0.
+
+DiffSynth-Studio (https://github.com/modelscope/DiffSynth-Studio)
+  Copyright 2023 Zhongjie Duan. Apache License 2.0.
+  Derived code in worldcast/sampling/schedulers.py (flow-matching schedule) and
+  worldcast/engine/training/losses.py (training weight).
+
+Self Forcing (https://github.com/guandeh17/Self-Forcing)
+  Copyright the Self Forcing authors. Apache License 2.0.
+  Derived code in worldcast/modeling/wan22/model.py, worldcast/sampling/schedulers.py,
+  worldcast/sampling/rollouts.py, worldcast/engine/training/losses.py, worldcast/engine/training/recipes/dmd.py,
+  worldcast/distributed/process_group.py, worldcast/distributed/fsdp.py, worldcast/engine/checkpoint/training.py,
+  worldcast/engine/optim/builder.py, worldcast/engine/optim/ema.py and worldcast/data/training.py.
+
+ATI (https://github.com/bytedance/ATI)
+  Copyright (c) 2024-2025 Bytedance Ltd. and/or its affiliates. Apache License 2.0.
+  Splat kernel and top-k merge in worldcast/player_state/field.py.
+
+Matrix-Game 3.0 (https://github.com/SkyworkAI/Matrix-Game/tree/main/Matrix-Game-3)
+  Skywork AI. Apache License 2.0.
+  Plücker ray and SE(3) helpers in worldcast/modeling/rays.py.
+
+OpenAI CLIP (https://github.com/openai/CLIP)
+  Copyright (c) 2021 OpenAI. MIT License.
+  Text-cleaning helpers in worldcast/modeling/wan22/text_encoder.py (via Wan2.2).
+
+CausVid (https://github.com/tianweiy/CausVid), commit fab2440fb0386c5c9d8c561869a924bd173e1986
+  Copyright (c) 2025-2026 Tianwei Yin. MIT License (the license of that commit).
+  Short idioms and configuration that reached WorldCast through Self Forcing, kept with an
+  attribution comment at each site: worldcast/modeling/wan22/model.py (RoPE temporal offset, cache
+  hand-off to the blocks), worldcast/sampling/schedulers.py (batched add_noise lookup),
+  worldcast/sampling/rollouts.py (cache-filling reruns),
+  worldcast/modeling/wan22/text_encoder.py (padding zeroing), worldcast/modeling/wan22/vae.py (reciprocal after the
+  cast), worldcast/modeling/wan22/attention.py (flex block mask), worldcast/engine/training/losses.py (per-block
+  timestep broadcast), worldcast/distributed/fsdp.py (FSDP configuration, full state dict),
+  worldcast/distributed/process_group.py (seeding) and worldcast/utils/seed.py (seeding).
+
+Model weights
+  The WorldCast generator weights are fine-tuned from Wan2.2-TI2V-5B
+  (https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B, revision 921dbaf3f1674a56f47e83fb80a34bac8a8f203e),
+  Apache License 2.0, by the WorldCast authors. The Wan2.2 VAE and the umT5-XXL text encoder
+  (google/umt5-xxl, Apache License 2.0) are used unmodified.
+
+Data
+  Trained and evaluated on the OpenCS2 dataset
+  (https://huggingface.co/datasets/blanchon/opencs2_dataset), CC BY 4.0
+  (https://creativecommons.org/licenses/by/4.0/). Data files in this release derived from OpenCS2
+  (latents, labels, indices) were produced by the WorldCast authors: latents encoded with the
+  Wan2.2 VAE, labels computed from the recordings, and round indices.
+
+Counter-Strike and Counter-Strike 2 are trademarks of Valve Corporation. WorldCast is not
+affiliated with or endorsed by Valve. No Valve game files are included.

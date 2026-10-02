@@ -1,0 +1,54 @@
+# Pre-commit hooks (minWM's). The lint hooks run the tools of the active environment (language: system), so they
+# behave as in local development and CI. Install the tools and enable the hooks with:
+#     pip install -r requirements/dev.txt
+#     pre-commit install
+# black and isort read pyproject.toml; flake8 reads .flake8.
+
+default_language_version:
+  python: python3
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        files: \.py$
+        exclude: ^(examples|assets)/
+      - id: end-of-file-fixer
+        files: \.py$
+        exclude: ^(examples|assets)/
+      - id: debug-statements
+        files: \.py$
+        exclude: ^(examples|assets)/
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+        exclude: ^(assets|examples/data|demo/static/fonts)/
+      - id: check-merge-conflict
+
+  - repo: local
+    hooks:
+      - id: isort
+        name: isort
+        entry: isort
+        language: system
+        types: [python]
+        files: \.py$
+        exclude: ^(examples|assets)/
+
+      - id: black
+        name: black
+        entry: black
+        language: system
+        types: [python]
+        files: \.py$
+        exclude: ^(examples|assets)/
+
+      - id: flake8
+        name: flake8
+        entry: flake8
+        language: system
+        types: [python]
+        files: \.py$
+        exclude: ^(examples|assets)/

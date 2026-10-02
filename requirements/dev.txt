@@ -1,0 +1,13 @@
+# Development: the test suite and the format / lint tools (pyproject.toml extra "dev"). black is the source of
+# truth for formatting; run it before flake8.
+#
+#   pip install -r requirements/dev.txt && pip install -e . && pre-commit install
+
+-r base.txt
+
+pytest>=7
+black==26.5.1
+isort==9.0.2
+flake8==7.4.1
+pyupgrade==3.21.2
+pre-commit>=3.5

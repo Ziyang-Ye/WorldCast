@@ -1,0 +1,11 @@
+# The mock engine with the paper's block size: 16 frames (4 latents) per step, a little faster than real time
+# (550 ms of fake denoising + 16 x 22 ms of fake decoding = 0.9 s per 1 s block). Use it to see what the paper's
+# block size means for latency before a GPU is attached:
+#   python tools/serve_demo.py --role local --config configs/demo/demo.yaml --config configs/demo/mock_block16.yaml
+
+engine:
+  mock:
+    frames_per_step: 16
+    step_ms: 550.0
+    decode_ms: 22.0
+    jitter_ms: 30.0

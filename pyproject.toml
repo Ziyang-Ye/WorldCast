@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "worldcast"
+version = "0.1.0"
+description = "WorldCast: distributed multiplayer world models (one client per player; inference and training)"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Ziyang Ye" }, { name = "Junchao Huang" }, { name = "Evelyn Zhang" }, { name = "Zhihao Xie" },
+  { name = "Ruicheng Zhang" }, { name = "Boyao Han" }, { name = "Litao Ban" }, { name = "Ziye Wang" },
+  { name = "Xinting Hu" }, { name = "Shaoshuai Shi" }, { name = "Zhuotao Tian" }, { name = "Li Jiang" },
+]
+# The paper ran torch 2.9.1+cu128 on NVIDIA H20 GPUs (Python 3.10). Bit-exact reproduction needs that stack.
+dependencies = [
+  "torch>=2.4,<3",
+  "numpy>=1.24,<3",
+  "pyyaml>=6.0",
+  "safetensors>=0.4",
+  "pyarrow>=14",            # OpenCS2 tick tables
+  "imageio>=2.30",          # mp4 writer (decode)
+  "imageio-ffmpeg>=0.4.9",
+  "huggingface_hub>=0.23",  # tools/download_weights.py
+]
+
+[project.optional-dependencies]
+# The paper's attention kernel (FA3 if installed, else FA2); without it pass --attention sdpa (not bit-equal).
+# flash-attn builds against the installed torch, so install it after torch and without build isolation:
+# `pip install flash-attn --no-build-isolation` (README, Install).
+flash = ["flash-attn>=2.6"]
+# Only to (re)make the prompt embedding with umT5-XXL (tools/make_prompt_embedding.py).
+text = ["transformers>=4.40,<5", "ftfy>=6.1", "regex>=2023.0", "sentencepiece>=0.1.99"]
+# Training (tools/train.py; docs/training.md). Memory evidence of stages 2s, 3 and 4: trimesh with an embree ray
+# backend (embreex, or pyembree on older Pythons), OpenCV (target / teammate RGB), scipy (appearance check). Stage 1
+# decodes video with decord when it is installed, else OpenCV (the two need not give identical pixels).
+train = [
+  "trimesh>=4.0",
+  "embreex>=2.17",
+  "opencv-python-headless>=4.8",
+  "scipy>=1.10",
+]
+train-decord = ["decord>=0.6"]
+# The test suite (python -m pytest tests -q).
+test = ["pytest>=7"]
+# WorldCast Live, the web demo (docs/demo.md; requirements/demo.txt).
+demo = ["aiohttp>=3.9", "numpy>=1.24", "pillow>=10", "pyyaml>=6.0", "imageio-ffmpeg>=0.4.9", "pyarrow>=14"]
+# Development: tests, formatting and lint (requirements/dev.txt; pre-commit runs black, isort and flake8).
+dev = ["pytest>=7", "black==26.5.1", "isort==9.0.2", "flake8==7.4.1", "pyupgrade==3.21.2", "pre-commit>=3.5"]
+
+[project.urls]
+Homepage = "https://ziyang-ye.github.io/WorldCast-Page/"
+Repository = "https://github.com/Ziyang-Ye/WorldCast"
+
+[tool.setuptools.packages.find]
+include = ["worldcast", "worldcast.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+# black and isort: line length 100, as .flake8 (minWM's settings).
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+extend-exclude = '^/(examples|assets)/'
+
+[tool.isort]
+profile = "black"
+line_length = 100
+multi_line_output = 3
+include_trailing_comma = true
+known_first_party = ["worldcast", "demo"]
+skip_glob = ["examples/*", "assets/*"]

@@ -1,0 +1,174 @@
+# WorldCast inference, 4-step student: the paper's Table-3 WorldCast row.
+#
+# Loaded by worldcast.config.inference.load_config. Every value equals the default in worldcast/config/inference.py and is written out
+# here so the paper settings can be read in one place. Source: the research code's deployment config of the deployed
+# stage-4 checkpoint (step 600), merged over its default config, and the command line of the reference run. The key
+# or flag of the paper's research code in brackets.
+#
+# Paths have no defaults: fill in `paths` (or pass them on the command line). Nothing else needs to change to
+# reproduce the paper.
+
+model:
+  name: Wan2.2-TI2V-5B                # [model_kwargs.model_name] base snapshot, revision 921dbaf3
+  latent_channels: 48                 # [image_or_video_shape[2]]
+  latent_height: 24                   # [image_or_video_shape[3]] 384 px / 16
+  latent_width: 42                    # [image_or_video_shape[4]] 672 px / 16
+  patch_size: [1, 2, 2]               # DiT patch of the snapshot config.json: 12 x 21 = 252 tokens per latent
+  vae_time_compression: 4             # [model_kwargs.vae_time_compression_ratio] 4 pixel rows per latent
+  vae_spatial_compression: 16         # [model_kwargs.vae_spatial_compression_ratio]
+  action_button_dim: 11               # [model_kwargs.action_button_dim]
+  action_camera_dim: 2                # [model_kwargs.action_camera_dim]
+  action_weapon_vocab_size: 52        # [model_kwargs.action_weapon_vocab_size]
+  action_weapon_embedding_dim: 32     # [model_kwargs.action_weapon_embedding_dim]
+  action_history_frames: 20           # [model_kwargs.action_history_frames]
+  action_hidden_dim: 1024             # [model_kwargs.action_hidden_dim]
+  action_adaln_rank: 128              # [model_kwargs.action_adaln_rank]
+  condition_passthrough_keys:         # [model_kwargs.condition_passthrough_keys] extra generator inputs
+    - peer_states
+    - peer_actions
+    - peer_observer_slot
+    - peer_team_ids
+    - peer_alive
+    - peer_visible
+    - peer_weapons
+    - state_wp_memory_c2w
+    - state_wp_anchor_c2w
+    - state_wp_memory_frames
+    - state_wp_frame_c2w
+    - state_wp_frame_tans
+    - obs_flash_flag
+    - obs_flash_valid
+    - obs_scope_on
+    - obs_scope_level
+    - obs_scope_valid
+  obs_signal_hidden: 128              # [obs_signal.hidden] flash / scope branch
+  memory_form: input_tokens           # [memory_worldplay_form] retrieved latents are window latents 1-4
+  ray_form: plucker_dm                # [memory_worldplay_ray_form]
+  ray_unit_u: 420.0                   # [memory_worldplay_ray_unit_u]
+  rays_all_frames: true               # [memory_worldplay_sym_rays]
+  camera_tans: true                   # [memory_worldplay_camera_tans]
+  visibility_head_block: 20           # [visibility_head_block] kept for the strict load only
+  visibility_head_hidden: 256         # [visibility_head_hidden]
+  fixed_prompt: first-person Counter-Strike 2 gameplay   # [fixed_prompt]
+  player_field:
+    inject_after_block: 1             # [peer_raster_block] after DiT block index 1 (the second of 30)
+    stem_hidden: 32                   # [peer_raster_hidden]
+    stem_depth: 1                     # [peer_raster_stem_depth]
+    splat_kernel: ati                 # [peer_raster_splat_kernel]
+    splat_topk: 2                     # [peer_raster_splat_topk]
+    splat_sigma_floor: 0.5            # [peer_raster_splat_sigma_floor]
+    splat_temperature: 220.0          # [peer_raster_splat_temperature] inert: capped to 72 on 12 x 21
+    visibility_confidence: true       # [peer_raster_visibility_confidence]
+    confidence_floor: 0.3             # [peer_raster_confidence_floor]
+    confidence_smooth: 0.5            # [peer_raster_confidence_smooth]
+    death_channels: true              # [peer_raster_death_channels]
+    id_bands: true                    # [peer_raster_id_bands]
+    weapon_channels: 4                # [peer_raster_weapon_channels]
+    action_signals: [forward, back, move_left, move_right, jump, duck, speed, attack, reload]   # [peer_raster_action_signals]
+    duck_aware: true                  # [peer_raster_duck_aware]
+    camera_delta_scale: 5.0           # [peer_camera_delta_scale]
+    action_substeps: 4                # [peer_action_substeps]
+    continuous_camera: true           # [memory_worldplay_continuous_camera]
+    visibility_source: labels         # GT visibility labels (Table 3)
+
+sampler:
+  scheduler:
+    num_train_timesteps: 1000         # [num_train_timestep]
+    shift: 5.0                        # [timestep_shift]
+    sigma_min: 0.0                    # FlowMatchScheduler(sigma_min=0.0)
+    sigma_max: 1.0
+    extra_one_step: true              # FlowMatchScheduler(extra_one_step=True)
+  ladder: [1000, 750, 500, 250]       # [fewstep_denoising_step_list] (--expect-fewstep-ladder)
+  warp_ladder: true                   # [warp_denoising_step] -> timesteps 1000 / 937.5 / 833.3 / 625
+  context_noise: 16                   # [context_noise, memory_worldplay_infer_context_noise, --context-noise] label 16, level t ~ 14.82
+  context_noise_band: [16, 32]        # [memory_worldplay_context_noise_{min,max}_timestep] trained band
+  guidance_scale: 1.0                 # [guidance_scale] no CFG
+  model_input_dtype: bfloat16         # FSDP root input cast: the model sees timesteps 1000 / 936 / 832 / 624
+  tf32: true                          # TF32 matmul / conv (set by the research code's trainer)
+  framewise_condition_axes:           # [framewise_condition_axes] sliced per block
+    peer_alive: 1
+    peer_visible: 1
+
+window:
+  block: 4                            # [num_frame_per_block]
+  recent: 12                          # [memory_worldplay_recent, --recent]
+  min_target_latent: 24               # [memory_worldplay_min_target_latent] first reconstituted block s = 25
+  memory_slot: 4                      # one retrieved block at window positions 1-4 (k = 1)
+  sink: episode_first                 # [--sink-mode] position 0 = the first latent of the round's video
+  independent_first_frame: true       # [independent_first_frame]
+  max_prefix_latents: 41              # [image_or_video_shape[1]]
+  kv_cache_latents: 41                # [--local-attn 41] KV cache capacity in latents
+  kv_sink_latents: 0                  # [--sink-size 0]
+
+data:
+  camera_encoding: noclip             # [WC_CAMERA_ENCODING=noclip] (the research code's default was clip; docs/inference.md, "Numerics that the paper's numbers depend on")
+  action_buttons: [forward, back, move_left, move_right, jump, duck, speed, attack, attack2, reload, look_at_weapon]
+  skip_frame: 2                       # [skip_frame] 32 fps -> 16 fps
+  max_tick_gap_seconds: 0.0390625     # [max_tick_gap_seconds]
+  weapon_mode: fine                   # [weapon_mode]
+  eye_height: 64.0                    # [memory_eye_height]
+  hfov_degrees: 106.26                # [memory_hfov_degrees]
+  pose_source: oracle                 # ground-truth poses for every player (Table 3)
+
+memory:
+  enabled: true                       # [--arm memory_on]
+  bound: 64                           # [--bound] B
+  k: 1                                # [--k] one entry per read
+  start_latent: 25                    # first read at latent 25
+  write_gate: 0.0                     # [--view-g 0]
+  holes: reach                        # [--view-holes]
+  read_rule: fill                     # [--view-read]
+  own: include                        # [--view-own]
+  write: own                          # [--view-write]
+  pool_scope: all                     # [--view-pool-scope]
+  scene_depth: picture                # [--scene-depth]
+  scene_memory: views                 # [--scene-memory]
+
+player_state:
+  source: recorded                    # recorded (Table 3) | predicted (closed loop, Tables 2 and 4a; needs paths.state_model)
+  pose_radius_u: 40.0                 # [--visibility-pose-radius] predicted visibility: 8 test points on this ring
+
+pool:
+  provenance: live                    # [--pool-provenance]
+  address: published                  # [--live-address]
+  wait_s: 1800.0                      # [--live-wait-s]
+  poll_s: 2.0                         # [--live-wait-poll-s]
+  fail_on_timeout: true               # release default (the research code degraded silently)
+
+paths:
+  checkpoint: null                    # generator weights, step 600 (research code: <checkpoint_dir>/model.pt)
+  checkpoint_key: generator_ema       # [--weight-source composite_ema]
+  wan22_root: null                    # Wan2.2-TI2V-5B snapshot directory (research code: $WAN22_MODEL_ROOT); umT5 if no prompt_embedding
+  prompt_embedding: null              # fixed_prompt_umt5xxl_bf16.safetensors (shipped; skips umT5)
+  depth_head: null                    # [--picture-depth-head] depthlat_ckpt.pt
+  depth_readout: null                 # [--picture-depth-readout] readout.pt
+  round_index: null                   # [--index] wholeround_index.jsonl
+  media_index: null                   # [covis_media_index]
+  dataset_root: null                  # [covis_dataset_root] OpenCS2 tick parquet
+  latent_cache_root: null             # [latent_cache_root] first-frame latents
+  visibility_label_root: null         # [visibility_label_root]
+  obs_signal_label_root: null         # flashlabels/ and scopelabels/ (a fixed path in the research code)
+  live_pool_dir: null                 # [--live-pool-dir] one fresh directory per session
+  out_dir: null                       # [--out]
+  state_model: null                   # player_state.source=predicted: state model checkpoint (not released)
+  state_model_cells: null             # predicted: configs/state_model/cells_v1.json
+  state_model_map_norm: null          # predicted: configs/state_model/map_norm_v1.json
+  physics_prior: null                 # predicted: configs/state_model/physics_prior_v1.json
+
+run:
+  seed: 20260917                      # [--seed]
+  latents: 441                        # [--latents] 1 + 4 x 110 s
+  index_row: null                     # [--window] one row per client (the reference run: 59)
+  max_blocks: 0                       # [--max-blocks] 0 = all
+  device: cuda
+  latents_dtype: float32              # latents.npy dtype
+
+weights:                              # used only by tools/download_weights.py
+  hf_repo_id: ZiyangYe/WorldCast
+  hf_revision: null
+  checkpoint_file: worldcast_4step_bf16.safetensors
+  depth_head_file: depth_head.safetensors
+  depth_readout_file: depth_readout.safetensors
+  prompt_embedding_file: fixed_prompt_umt5xxl_bf16.safetensors
+  wan22_repo_id: Wan-AI/Wan2.2-TI2V-5B
+  wan22_revision: 921dbaf3f1674a56f47e83fb80a34bac8a8f203e

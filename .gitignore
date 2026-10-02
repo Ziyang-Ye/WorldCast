@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.DS_Store
+# Local inputs and outputs of the README commands (anchored: worldcast/data/ is code)
+/weights/
+/data/
+/runs/
+/train_paths.yaml
+outputs/
+checkpoints/

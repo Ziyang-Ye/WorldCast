@@ -1,0 +1,14 @@
+# Runtime dependencies of the worldcast package (pyproject.toml, [project] dependencies):
+#
+#   pip install -r requirements/base.txt && pip install -e .
+#
+# The paper ran torch 2.9.1+cu128 and flash-attn 2.8.3 on NVIDIA H20 GPUs (Python 3.10); bit-exact reproduction
+# needs that stack. flash-attn builds against the installed torch: pip install flash-attn --no-build-isolation.
+torch>=2.4,<3
+numpy>=1.24,<3
+pyyaml>=6.0
+safetensors>=0.4
+pyarrow>=14
+imageio>=2.30
+imageio-ffmpeg>=0.4.9
+huggingface_hub>=0.23

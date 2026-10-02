@@ -1,0 +1,19 @@
+# minWM's .flake8 (itself adapted from detectron2's), kept in sync with pyproject.toml (black / isort: 100).
+
+[flake8]
+# E704: black formats type-stub bodies as `def f(): ...` on one line.
+ignore = W503, E203, E221, C901, C408, E741, C407, B017, F811, C101, EXE001, EXE002, E704
+max-line-length = 100
+max-complexity = 18
+select = B,C,E,F,W,T4,B9
+exclude =
+    build,
+    .git,
+    __pycache__,
+    .venv,
+    venv,
+    assets,
+    examples
+per-file-ignores =
+    **/__init__.py:F401,F403,E402
+    tests/**.py:F401,E402

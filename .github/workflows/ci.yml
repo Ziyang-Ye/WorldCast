@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements/dev.txt
+      - name: Install lint tools
+        run: pip install "black==26.5.1" "isort==9.0.2" "flake8==7.4.1"
+      - name: black
+        run: black --check worldcast tools demo tests
+      - name: isort
+        run: isort --check-only worldcast tools demo tests
+      - name: flake8
+        run: flake8 worldcast tools demo tests
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      # CPU-only torch; tests that need a GPU, the weights or the paper's data skip and say why.
+      - name: Install torch (CPU)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install WorldCast
+        run: pip install -e ".[test]"
+      - name: pytest
+        run: python -m pytest tests -q --tb=short

@@ -1,0 +1,11 @@
+# nuke_r07: de_nuke, match 2393223 round 7, 4 clients, 20 s (examples/README.md).
+# Paths are relative to the repository root; tools/download_examples.py fetches the data files.
+paths:
+  round_index: examples/data/nuke_r07/round_index.jsonl
+  media_index: examples/data/nuke_r07/media_index.jsonl
+  dataset_root: examples/data/nuke_r07/opencs2
+  latent_cache_root: examples/data/nuke_r07/first_latents
+  visibility_label_root: examples/data/nuke_r07/vislabels
+  obs_signal_label_root: examples/data/nuke_r07/obslabels
+run:
+  latents: 81  # 1 + 4 per second: 20 s

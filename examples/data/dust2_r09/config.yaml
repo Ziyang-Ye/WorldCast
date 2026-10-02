@@ -1,0 +1,11 @@
+# dust2_r09: de_dust2, match 2392774 round 9, 5 clients, 20 s (examples/README.md).
+# Paths are relative to the repository root; tools/download_examples.py fetches the data files.
+paths:
+  round_index: examples/data/dust2_r09/round_index.jsonl
+  media_index: examples/data/dust2_r09/media_index.jsonl
+  dataset_root: examples/data/dust2_r09/opencs2
+  latent_cache_root: examples/data/dust2_r09/first_latents
+  visibility_label_root: examples/data/dust2_r09/vislabels
+  obs_signal_label_root: examples/data/dust2_r09/obslabels
+run:
+  latents: 81  # 1 + 4 per second: 20 s

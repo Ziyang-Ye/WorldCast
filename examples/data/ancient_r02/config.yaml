@@ -1,0 +1,11 @@
+# ancient_r02: de_ancient, match 2392968 round 2, 10 clients, 60 s (examples/README.md).
+# Paths are relative to the repository root; tools/download_examples.py fetches the data files.
+paths:
+  round_index: examples/data/ancient_r02/round_index.jsonl
+  media_index: examples/data/ancient_r02/media_index.jsonl
+  dataset_root: examples/data/ancient_r02/opencs2
+  latent_cache_root: examples/data/ancient_r02/first_latents
+  visibility_label_root: examples/data/ancient_r02/vislabels
+  obs_signal_label_root: examples/data/ancient_r02/obslabels
+run:
+  latents: 241  # 1 + 4 per second: 60 s
