@@ -1,0 +1,9 @@
+# "Trained with a coarse field" (Table 5): the field max-pooled by two and copied back.
+
+inherit: base.yaml
+
+run:
+  name: worldcast-ablation-coarse-field
+
+model:
+  field_downsample: 2

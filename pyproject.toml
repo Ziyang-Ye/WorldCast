@@ -1,0 +1,90 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "worldcast"
+version = "0.1.0"
+description = "WorldCast: distributed multiplayer world models (one client per player; inference and training)"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+requires-python = ">=3.10"
+authors = [
+  { name = "Ziyang Ye" }, { name = "Junchao Huang" }, { name = "Evelyn Zhang" }, { name = "Zhihao Xie" },
+  { name = "Ruicheng Zhang" }, { name = "Boyao Han" }, { name = "Litao Ban" }, { name = "Ziye Wang" },
+  { name = "Xinting Hu" }, { name = "Shaoshuai Shi" }, { name = "Zhuotao Tian" }, { name = "Li Jiang" },
+]
+# The reference runs ran torch 2.9.1+cu128 on NVIDIA H20 GPUs (Python 3.10); bit-exact reproduction needs that
+# stack (docs/inference.md, "Numerics").
+dependencies = [
+  "torch>=2.4,<3",
+  "numpy>=1.24,<3",
+  "pyyaml>=6.0",
+  "safetensors>=0.4",
+  "pyarrow>=14",            # OpenCS2 tick tables
+  "imageio>=2.30",          # mp4 writer (decode)
+  "imageio-ffmpeg>=0.4.9",
+  "huggingface_hub>=0.23",  # tools/download_weights.py, tools/download_examples.py
+]
+
+# FlashAttention-2 builds against the installed torch: install it after torch and
+# without build isolation, `pip install flash-attn==2.8.3 --no-build-isolation` (README, Install). Without it pass
+# --set model.attention=sdpa (not bit-equal).
+[project.optional-dependencies]
+# Only to (re)make the prompt embedding with umT5-XXL (tools/make_prompt_embedding.py).
+text = ["transformers>=4.40,<5", "ftfy>=6.1", "regex>=2023.0", "sentencepiece>=0.1.99"]
+# Training (tools/train.py; docs/training.md). The memory frames of stages 2s, 3 and 4: trimesh with an embree ray
+# backend, OpenCV (target / teammate frames), scipy. Stage 1 decodes video with decord when it is installed, else
+# OpenCV (the two need not give identical pixels).
+train = [
+  "trimesh>=4.0",
+  "embreex>=2.17",
+  "opencv-python-headless>=4.8",
+  "scipy>=1.10",
+]
+train-decord = ["decord>=0.6"]
+# Evaluation (tools/evaluate.py; docs/training.md, "Evaluation"): SSIM and LPIPS as the paper's scorer computed them.
+eval = ["torchmetrics>=1.0", "lpips>=0.1.4"]
+# The showcase video of a round (tools/make_showcase.py): the drawing needs Pillow.
+showcase = ["pillow>=10.1"]
+# The test suite (python -m pytest tests -q); the showcase's tests draw with Pillow.
+test = ["pytest>=7", "worldcast[showcase]"]
+
+[project.urls]
+Homepage = "https://ziyang-ye.github.io/WorldCast-Page/"
+Paper = "https://arxiv.org/abs/2610.12412"
+Repository = "https://github.com/Ziyang-Ye/WorldCast"
+
+[tool.setuptools.packages.find]
+include = ["worldcast", "worldcast.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+  # The CPU runs enter CUDA autocast regions, which torch disables with a warning.
+  "ignore:User provided device_type of 'cuda':UserWarning",
+  # FSDP on the tests' process group of one rank does not shard, and says so.
+  "ignore:FSDP is switching to use `NO_SHARD`:UserWarning",
+  "ignore:When using ``NO_SHARD``:UserWarning",
+  "ignore:FSDP.state_dict_type:FutureWarning",
+  # The state model's pre-norm transformer encoder cannot use nested tensors, and says so.
+  "ignore:enable_nested_tensor is True:UserWarning",
+  # The lpips package loads torchvision's AlexNet through the deprecated arguments.
+  "ignore:The parameter 'pretrained' is deprecated:UserWarning",
+  "ignore:Arguments other than a weight enum:UserWarning",
+  # torch frees a tensor that a weak reference of its own still names (the package takes none);
+  # the message lands on whatever line runs next.
+  "ignore:Deallocating Tensor that still has live PyObject references:UserWarning",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+multi_line_output = 3
+include_trailing_comma = true
+known_first_party = ["worldcast"]

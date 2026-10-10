@@ -1,0 +1,9 @@
+# "Trained without foreground weight" (Table 5): alpha_k = 1.
+
+inherit: base.yaml
+
+run:
+  name: worldcast-ablation-no-foreground-weight
+
+loss:
+  foreground_weight: false

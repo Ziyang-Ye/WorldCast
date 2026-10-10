@@ -1,0 +1,10 @@
+# "Trained without visibility" (Table 5): the field writes every living player in the view frustum at full
+# strength, without the visibility gate and confidence (alpha_k still reads the labels).
+
+inherit: base.yaml
+
+run:
+  name: worldcast-ablation-no-visibility
+
+model:
+  visibility_gate: false

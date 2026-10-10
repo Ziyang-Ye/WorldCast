@@ -1,0 +1,9 @@
+# "Trained with late injection" (Table 5): the field added after the 23rd DiT block.
+
+inherit: base.yaml
+
+run:
+  name: worldcast-ablation-late-injection
+
+model:
+  state_injector_block: 22

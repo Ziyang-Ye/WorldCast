@@ -1,0 +1,9 @@
+# Stage 4 without scene state: the distillation of stage 3 without scene state, 600 steps (docs/training.md).
+# The paper run: 32 GPUs x 1 window x 2 micro-batches = 64. checkpoint.init: stage 3 without scene state at
+# step 5,000 (model_ema.pt); distillation.teacher and distillation.critic: stage 2 at step 25,000 (EMA).
+#
+# The settings are the paper run's, the stage's defaults (STAGE_SETTINGS in worldcast/config/training.py;
+# tools/train.py --print-config prints them). Pass the paths with train_paths.yaml and --set.
+
+run:
+  stage: "4_noscene"

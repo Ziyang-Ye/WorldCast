@@ -1,0 +1,38 @@
+# Paths for training (docs/training.md, "Install and data"; the files: docs/data.md).
+#
+# Copy this file to train_paths.yaml, point each entry at your files, and pass it after the stage config:
+#
+#   cp examples/train_paths.yaml train_paths.yaml
+#   torchrun ... tools/train.py --config configs/train/stage4.yaml --config train_paths.yaml \
+#       --set run.output_dir=runs/stage4 --set checkpoint.init=runs/stage3/checkpoint_model_005000/model_ema.pt
+#
+# One file serves every stage: a stage ignores the entries it does not read. Stages 1 and 1_long read raw video and
+# take their window manifest with --set data.train_manifest=... (the two stages need different manifests: 21- and
+# 41-latent windows). Stages 2 to 4 read the cached windows below. Relative paths are taken from the directory the
+# command is run in.
+
+model:
+  wan22_root: weights/Wan2.2-TI2V-5B           # Wan2.2-TI2V-5B snapshot: config.json; the backbone and VAE for stage 1
+
+data:
+  dataset_root: data/opencs2                   # OpenCS2 recordings: tick tables and videos
+  media_index: data/media_index.jsonl          # one row per player-round (docs/inference.md)
+  bucket_dir: data/buckets                     # train_q00-01.jsonl ... train_q07-10.jsonl: one map each (stages 2-4)
+  latent_cache_root: data/latent_cache         # <media_id>.npz with all 41 latents of each cached window
+  visibility_label_root: data/vislabels        # <media_id>.npz GT visibility labels
+  observer_signal_label_root: data/obslabels   # flashlabels/ and scopelabels/
+  exclude_media_manifest: data/eval_reserve.txt   # media ids held out for evaluation, one per line
+  prompt_embedding: weights/worldcast/fixed_prompt_umt5xxl_bf16.safetensors
+  collision_meshes:                            # memory frames of stages 2s, 3 and 4
+    de_dust2: data/meshes/de_dust2_world_collision_complete.glb
+    de_mirage: data/meshes/de_mirage_world_collision_complete.glb
+    de_nuke: data/meshes/de_nuke_world_collision_complete.glb
+    de_ancient: data/meshes/de_ancient_world_collision_complete.glb
+
+distillation:                                  # stage 4: stage 2 of your run at step 25,000 (EMA)
+  teacher: runs/stage2/checkpoint_model_025000/model_ema.pt
+  critic: runs/stage2/checkpoint_model_025000/model_ema.pt
+
+validation:
+  index: data/validation_index.jsonl   # the 64 validation windows (tools/evaluate.py); in training:
+                                       # --set validation.interval=1000
