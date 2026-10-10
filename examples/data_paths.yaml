@@ -1,0 +1,19 @@
+# Data paths of the inference client (docs/inference.md, "Data", lists the files); tools/download_examples.py
+# writes each example case's own (<out-dir>/data/<case>/config.yaml).
+#
+# Copy this file to data/paths.yaml, point each entry at your files, and pass it as an extra --config:
+#
+#   mkdir -p data && cp examples/data_paths.yaml data/paths.yaml
+#   python tools/run_session.py --config weights/paths.yaml --config data/paths.yaml \
+#       --all-rounds --round-length --gpus 0,1,2 --out-dir runs/table3
+#
+# weights/paths.yaml (written by tools/download_weights.py) holds the weight entries of `paths`; this file holds
+# the data entries. Relative paths are taken from the directory the scripts are run in.
+
+paths:
+  round_index: data/round_index.jsonl        # one row per client; --index-row / --round-of count rows from 0
+  media_index: data/media_index.jsonl        # one row per player-round
+  dataset_root: data/opencs2                 # holds rounds/match_id=<m>/map_name=<map>/round=<rr>/...
+  latent_cache_root: data/first_latents      # <media_id>.npz, member win_<start:06d>
+  visibility_label_root: data/vislabels      # <media_id>.npz
+  observer_signal_label_root: data/obslabels  # holds flashlabels/ and scopelabels/

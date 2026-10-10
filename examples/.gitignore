@@ -1,0 +1,7 @@
+# Written by tools/download_examples.py --out-dir examples
+/data/*/config.yaml
+/data/*/opencs2/
+/data/*/first_latents/
+/data/*/vislabels/
+/data/*/obslabels/
+/expected/

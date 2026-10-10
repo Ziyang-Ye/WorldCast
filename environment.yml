@@ -1,0 +1,15 @@
+# One command: conda env create -f environment.yml && conda activate worldcast
+# Run it from the repository root: the last line installs this package, with the extras of training, evaluation,
+# the showcase video and the tests. The reference runs used Python 3.10 and torch 2.9.1 with CUDA 12.8; for another
+# CUDA build change the index below (pytorch.org). The attention kernel is installed afterwards, see the README.
+name: worldcast
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch==2.9.1
+      - torchvision==0.24.1
+      - -e .[train,eval,showcase,test]

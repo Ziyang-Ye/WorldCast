@@ -1,0 +1,10 @@
+# Stage 1: Wan2.2-TI2V-5B tuned on 5 s windows with the player's own controls, 34,000 steps, no EMA
+# (docs/training.md). The paper run: 64 GPUs x 4 windows = 256. It starts from the backbone of
+# model.wan22_root (checkpoint.init: wan22) and reads raw video: data.train_manifest, the manifest of 5 s
+# windows (docs/data.md).
+#
+# The settings are the paper run's, the stage's defaults (STAGE_SETTINGS in worldcast/config/training.py;
+# tools/train.py --print-config prints them). Pass the paths with train_paths.yaml and --set.
+
+run:
+  stage: "1"

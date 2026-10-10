@@ -1,0 +1,12 @@
+# The run settings the ablations of Table 5 share: stage 2 for 6,000 steps from stage 1_long, 32 GPUs x 1 x 2 = 64,
+# each parameter group clipped on its own (docs/training.md). An ablation file inherits this one and changes one
+# setting of the mechanism.
+
+inherit: ../stage2.yaml
+
+run:
+  max_steps: 6000
+
+optim:
+  grad_accum_steps: 2
+  clip: per_group

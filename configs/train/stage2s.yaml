@@ -1,0 +1,9 @@
+# Stage 2 + scene state: memory frames in the bidirectional model, 5,000 steps (docs/training.md). The paper run:
+# 32 GPUs x 1 window x 2 micro-batches = 64. checkpoint.init: stage 2 at step 20,000 (model_ema.pt). The memory
+# frames need data.collision_meshes and the teammates' windows in the latent cache.
+#
+# The settings are the paper run's, the stage's defaults (STAGE_SETTINGS in worldcast/config/training.py;
+# tools/train.py --print-config prints them). Pass the paths with train_paths.yaml and --set.
+
+run:
+  stage: "2s"
