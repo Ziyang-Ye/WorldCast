@@ -335,6 +335,12 @@ class PlaceHead(nn.Module):
             nn.Linear(_BODY_DIM + _CELL_DIM + _SUB_CELL_DIM, 512), nn.SiLU(), nn.Linear(512, 3)
         )
 
+    def cell_columns(self, map_id: int) -> np.ndarray:
+        """The columns of a map's cells: ``[n, 2]`` int64 lattice indices (x, y) of the distinct
+        cells in the horizontal plane, whatever their height; the map's walkable extent."""
+        origin = self.cell_origin[self.cell_mask[int(map_id)]][:, :2].cpu().numpy()
+        return np.unique(np.rint(origin / np.asarray(CELL_SIZE[:2])).astype(np.int64), axis=0)
+
     def address(
         self, trunk_tokens: torch.Tensor, early: torch.Tensor, map_id: torch.Tensor
     ) -> Address:

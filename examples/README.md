@@ -30,9 +30,9 @@ python tools/check_examples.py examples/data/*/config.yaml  # CPU only: every cl
 
 The files come from the WorldCast repository on Hugging Face (as the weights do); `--source <dir>` takes them from a
 local copy of the repository instead, a directory that holds its `examples/` as the Hub does, checked by the same
-sha256. A case holds the files of [docs/inference.md](../docs/inference.md#data): `round_index.jsonl` (one row per client) and
-`media_index.jsonl` (all ten players) are in `examples/data/<case>/`; the download puts `opencs2/` (their tick
-tables), `first_latents/`, `vislabels/` and `obslabels/` into `<out-dir>/data/<case>/`, the expected video into
+sha256. A case holds the files of [docs/inference.md](../docs/inference.md#data): `round_index.jsonl` (one row per
+client) and `media_index.jsonl` (all ten players) are in `examples/data/<case>/`; the download puts `opencs2/` (their
+tick tables), `first_latents/`, `vislabels/` and `obslabels/` into `<out-dir>/data/<case>/`, the expected video into
 `<out-dir>/expected/`, and writes `<out-dir>/data/<case>/config.yaml` with these paths and the length. Another
 `--out-dir` keeps the data outside the checkout (then `DATA=<out-dir> bash examples/run.sh <case>`). The recorded
 videos of the rounds are in OpenCS2 (`video_path` in `media_index.jsonl`).
@@ -116,7 +116,7 @@ SHOWCASE=1 bash examples/run.sh mirage_r16
 also writes `runs/examples/mirage_r16/showcase.mp4` (`tools/make_showcase.py`, on the CPU), which shows the GT
 player states the clients ran with:
 
-- each client's view, labelled with its player (P1-P10, each in its own colour) and team;
+- each client's view, labelled with its player (P1-P10, in the live demo's colours with a lighter P9) and team;
 - in each view, a box at every other living player's recorded position within the view's width, projected into the
   client's recorded camera as the player state field projects players (`player_boxes` of
   `worldcast/player_state/projection.py`): its foot at the player's feet, as tall as the body; bold where the field's

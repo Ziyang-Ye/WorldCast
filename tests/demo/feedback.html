@@ -1,0 +1,31 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>feedback</title>
+<pre id="out" hidden>running</pre>
+<script type="application/json" id="setup">__SETUP__</script>
+<script type="module">
+// The motion feedback controller (static/feedback.js) as served, run alone over scripted steps. A run is a setting and a list of
+// steps [time (ms), kind, ...] in order: ['press', button, seq] and ['release', button] (PlayerInput's edges), ['arrive', q] (a
+// frame that holds the input samples up to q is drawn), ['set', setting] and ['at'], which records the view's {zoom, shift}.
+import { MotionFeedback } from './static/feedback.js';
+
+const setup = JSON.parse(document.getElementById('setup').textContent);
+const out = { runs: {} };
+try {
+  for (const [name, run] of Object.entries(setup.runs)) {
+    const feedback = new MotionFeedback(run.setting);
+    const seen = [];
+    for (const [time, kind, ...args] of run.steps) {
+      if (kind === 'press') feedback.buttons([args[0]], [], time, args[1]);
+      else if (kind === 'release') feedback.buttons([], [args[0]], time, 0);
+      else if (kind === 'arrive') feedback.arrived(args[0], time);
+      else if (kind === 'set') feedback.set(args[0]);
+      else seen.push({ time, ...feedback.at(time) });
+    }
+    out.runs[name] = seen;
+  }
+} catch (error) {
+  out.error = `${error}`;
+}
+document.getElementById('out').textContent = JSON.stringify(out);
+</script>

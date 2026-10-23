@@ -738,11 +738,32 @@ class Wan22VAE(nn.Module):
         """
         return Wan22StreamingDecoder(self).decode_chunk(z, scale)
 
+    def set_decoder_channels_last(self, on: bool) -> None:
+        """Keep the weights of the decoding convolutions (``conv2`` and ``decoder``) in the
+        channels-last layout (5-d weights channels-last 3-d, 4-d weights channels-last) or, with
+        ``on=False``, in the default one. The values are the same; on the GPU cuDNN picks other
+        kernels for the layout, so the pixels differ in the last bits of the default layout's
+        (the paper's decoder) and a latent frame decodes faster.
+        """
+        with torch.no_grad():
+            for module in (self.conv2, self.decoder):
+                for weight in module.parameters():
+                    if weight.dim() not in (4, 5):
+                        continue
+                    if not on:
+                        layout = torch.contiguous_format
+                    else:
+                        layout = (
+                            torch.channels_last_3d if weight.dim() == 5 else torch.channels_last
+                        )
+                    weight.data = weight.data.contiguous(memory_format=layout)
+
 
 class Wan22StreamingDecoder:
     """Chunked decoding of one video: consecutive chunks through :meth:`decode_chunk` concatenate to
     :meth:`Wan22VAE.decode` of the whole sequence, up to the rounding of a convolution over another
-    number of frames. Call :meth:`reset` before a new video.
+    number of frames. Call :meth:`reset` before a new video; :meth:`snapshot` and :meth:`restore`
+    take it back to an earlier latent, to go on from there with other latents.
 
     Args:
         model (Wan22VAE): the VAE.
@@ -756,6 +777,17 @@ class Wan22StreamingDecoder:
         """Start a new video: empty cache, next latent is latent 0."""
         self._cache = CausalConvCache(count_causal_convs(self.model.decoder))
         self._decoded_frames = 0
+
+    def snapshot(self) -> tuple[list[None | str | torch.Tensor], int]:
+        """The video's state after the latents decoded so far, for :meth:`restore`. A frame
+        replaces the cache's slots and never writes into their tensors, so the state holds them
+        as they are."""
+        return list(self._cache.slots), self._decoded_frames
+
+    def restore(self, state: tuple[list[None | str | torch.Tensor], int]) -> None:
+        """Go back to a :meth:`snapshot`: the next latent decodes as it did after it."""
+        slots, self._decoded_frames = state
+        self._cache.slots = list(slots)
 
     @torch.no_grad()
     def decode_chunk(

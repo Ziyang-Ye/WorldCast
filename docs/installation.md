@@ -13,12 +13,18 @@ Run every command of the docs from the repository root. `environment.yml` pins t
 
 | extra | for |
 |---|---|
+| `.[demo]` | WorldCast Live, the web demo: aiohttp, Pillow, torchvision ([docs/demo.md](demo.md)) |
 | `.[showcase]` | `tools/make_showcase.py`: the drawing needs Pillow |
-| `.[train]` | training: trimesh with embree, OpenCV, scipy ([docs/training.md](training.md)) |
+| `.[train]` | training and `tools/prepare_data.py`'s meshes, visibility and latent-cache steps: trimesh with embree, OpenCV, scipy ([docs/training.md](training.md), [docs/data.md](data.md)) |
 | `.[train-decord]` | stage 1's video reader, decord, in place of OpenCV |
-| `.[eval]` | `tools/evaluate.py`: SSIM and LPIPS as the paper's scorer computed them |
+| `.[eval]` | `tools/evaluate.py`: SSIM and LPIPS as the paper's scorer computed them (torchmetrics, lpips) |
+| `.[metrics]` | `tools/evaluate_paper.py`, the paper's metrics: scipy, decord, OpenCV at the versions of the paper's values ([docs/training.md](training.md#the-papers-metrics)) |
+| `.[metrics-detector]` | `.[metrics]` and ultralytics (AGPL-3.0) for the player detector of Rendered and Unmatched (the `detect` step) |
+| `.[metrics-matching]` | `.[metrics]` and kornia (LoFTR), torchvision, einops and yacs (GIM's matcher) for Mat. Pix., Inliers and RotErr (the `match` step) |
 | `.[text]` | remaking the prompt embedding with umT5-XXL (`tools/make_prompt_embedding.py`) |
-| `.[test]` | the tests (`python -m pytest tests -q`) |
+| `.[test]` | the tests (`python -m pytest tests -q`), with `.[demo]`, which the demo's tests import |
+| `.[lint]` | black, isort and flake8 at the versions CI runs |
+| `.[dev]` | `.[test]`, `.[lint]` and pre-commit |
 
 Extras combine: `pip install -e ".[showcase,train,eval]"`.
 
@@ -26,7 +32,8 @@ Extras combine: `pip install -e ".[showcase,train,eval]"`.
 
 `model.attention: flash` (flash-attention 2) is what the reference runs used; the latents of the paper's runs are
 reproduced bit for bit with it on the reference stack: NVIDIA H20, torch 2.9.1+cu128, flash-attn 2.8.3
-([docs/inference.md](inference.md), "Numerics"). `fa3` is FlashAttention-3 where it is installed. Without either, pass `--set model.attention=sdpa` to a tool: it runs, and its latents are not bit-equal.
+([docs/inference.md](inference.md), "Numerics"). `fa3` is FlashAttention-3 where it is installed (the web demo's
+kernel). Without either, pass `--set model.attention=sdpa` to a tool: it runs, and its latents are not bit-equal.
 
 ## Memory
 
@@ -42,4 +49,5 @@ python -m pytest tests -q                         # CPU; what needs a GPU, the w
 python tools/run_client.py --help
 ```
 
-The examples are in the [README](../README.md#examples); the Table-3 rounds in [reproduce.md](reproduce.md).
+The examples are in the [README](../README.md#examples), the Table-3 rounds in [reproduce.md](reproduce.md) and the
+live demo in [demo.md](demo.md).

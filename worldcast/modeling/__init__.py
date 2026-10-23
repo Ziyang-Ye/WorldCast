@@ -12,8 +12,10 @@ __getattr__, __dir__, __all__ = lazy_exports(
         "build": (
             "CHECKPOINT_ROOT",
             "EMA_KEY",
+            "NOSCENE_FILE",
             "ONLINE_KEY",
             "build_inference_generator",
+            "client_weights",
             "generator_config_from_snapshot",
             "load_generator",
             "optional_modules",

@@ -72,3 +72,67 @@ def trajectory(k: int, n: int) -> np.ndarray:
         eye = np.array([170.0 * np.cos(a), 30.0 * np.sin(0.3 * li + k), 170.0 * np.sin(a) - 60.0])
         out[li] = cam(eye, yaw=0.55 * k + 0.07 * li, pitch=0.05 * np.sin(0.2 * li))
     return out
+
+
+# --------------------------------------------------------------- fake latents and a stub depth head
+#: Fake latents are ``[C, H, W] = [2, 3, 3]``: channel 0 carries a code (1000 k + latent index) that
+#: tells the stub depth head which camera the latent was "drawn" from; channel 1 is content, which
+#: the fake generator derives from the retrieved memory frames, so every read feeds into later
+#: latents, depths and decisions.
+LAT_SHAPE = (2, 3, 3)
+
+
+def base_latent(k: int, li: int):
+    import torch
+
+    x = torch.zeros(LAT_SHAPE, dtype=torch.float32)
+    x[0] = float(1000 * k + li)
+    x[1] = float(np.sin(0.37 * li + 1.3 * k)) + 0.01 * torch.arange(9, dtype=torch.float32).reshape(
+        3, 3
+    )
+    return x
+
+
+def gen_block(k: int, s: int, memory):
+    """The fake generator: block ``s`` of client ``k`` ``[4, 2, 3, 3]`` float32, shifted by the
+    content of its memory frames."""
+    import torch
+
+    out = torch.stack([base_latent(k, s + j) for j in range(4)])
+    if memory is not None:
+        sig = torch.as_tensor(memory, dtype=torch.float32)[:, 1].mean()
+        out[:, 1] = out[:, 1] + 0.5 * sig
+    return out
+
+
+class StubDepth:
+    """``log_depth(latents [T, 2, 3, 3]) -> log axial depth [T, 4, 24, 42]`` float32, from the
+    latent's code (its camera, ray-cast in the room) and its content (a few-percent scale), like the
+    real head's interface.
+    """
+
+    def __init__(self, trajs) -> None:
+        self.trajs = trajs
+        self.n_calls = 0
+        self.n_latents = 0
+        self._room: dict = {}
+
+    def log_depth(self, latents) -> np.ndarray:
+        x = (
+            latents.detach().cpu().float().numpy()
+            if hasattr(latents, "detach")
+            else np.asarray(latents, dtype=np.float32)
+        )
+        out = np.empty((x.shape[0], 4, H, W), np.float32)
+        for t in range(x.shape[0]):
+            k, li = divmod(int(round(float(x[t, 0, 0, 0]))), 1000)
+            if (k, li) not in self._room:
+                self._room[(k, li)] = room_depth(self.trajs[k][li])
+            d = self._room[(k, li)]
+            f = 1.0 + 0.03 * np.tanh(float(x[t, 1].mean()))
+            dd = np.where(d >= 0.95 * FAR, FAR, d * f)
+            for c in range(4):
+                out[t, c] = np.log(dd * (1.0 + 0.002 * (c - 3)))
+        self.n_calls += 1
+        self.n_latents += int(x.shape[0])
+        return out

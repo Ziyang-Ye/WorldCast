@@ -1,0 +1,29 @@
+# A GPU worker's client: the WorldCast client on the release weights (tools/download_weights.py --out-dir weights)
+# and the data paths (docs/inference.md, "Data"), served with the tiny decoder, on the player's live controls
+# (player_state.source: live; it reads the own position with the state model that weights/paths.yaml names), with
+# the context of an idle player kept (live.idle_context: freeze; live.idle_with_peers: true: also while other
+# players are in the world and none is drawn in the player's view, docs/inference.md, "Live player states"), and with
+# a wall in the way: the movement keys cleared where a wall the depth head sees stops the camera (live.wall_keys:
+# guard), small steps checked against the motion head (live.dead_zone_u: 4) and the camera of a block starting where
+# the block before it ended (live.hop: spread):
+#   CUDA_VISIBLE_DEVICES=0 python tools/serve_demo.py --role worker --config configs/demo/worldcast.yaml ...
+# A --set of client.worldcast.overrides replaces the mapping: give these six keys in it too.
+
+client:
+  kind: worldcast
+  worldcast:
+    configs: [weights/paths.yaml, data/paths.yaml]
+    overrides:
+      player_state.source: live
+      live.idle_context: freeze
+      live.idle_with_peers: true
+      live.wall_keys: guard
+      live.dead_zone_u: 4.0
+      live.hop: spread
+    taehv_path: weights/taew2_2.pth
+
+# the block on screen is refreshed on new input, and a newer version of a frame that went goes too
+# while the page has not shown it (docs/demo.md, "Latency")
+play:
+  refresh: true
+  swap_sent: true

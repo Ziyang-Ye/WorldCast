@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "WorldCast: distributed multiplayer world models (one client per player; inference and training)"
 readme = "README.md"
 license = "Apache-2.0"
-license-files = ["LICENSE", "NOTICE"]
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_LICENSES.md"]
 requires-python = ">=3.10"
 authors = [
   { name = "Ziyang Ye" }, { name = "Junchao Huang" }, { name = "Evelyn Zhang" }, { name = "Zhihao Xie" },
@@ -46,18 +46,49 @@ train = [
 train-decord = ["decord>=0.6"]
 # Evaluation (tools/evaluate.py; docs/training.md, "Evaluation"): SSIM and LPIPS as the paper's scorer computed them.
 eval = ["torchmetrics>=1.0", "lpips>=0.1.4"]
+# The paper's metrics (tools/evaluate_paper.py; docs/training.md, "The paper's metrics"): scipy (the entity
+# criterion's matching, FVD's matrix square root), decord (the videos, as the paper decoded them), OpenCV (the
+# recordings). Bit-equal values need these versions on the paper's stack.
+metrics = ["scipy==1.15.3", "decord==0.6.0", "opencv-python-headless==4.13.0.92"]
+# The player detector of Rendered and Unmatched: ultralytics is AGPL-3.0, so it has an extra of its own and is not
+# distributed with WorldCast.
+metrics-detector = ["worldcast[metrics]", "ultralytics==8.4.110"]
+# Mat. Pix., Inliers and RotErr: LoFTR (kornia) and GIM's dense matcher (torchvision, einops; its checkpoint
+# unpickles with yacs). VBench runs in an environment of its own (docs/training.md).
+metrics-matching = [
+  "worldcast[metrics]",
+  "kornia==0.8.2",
+  "kornia_rs==0.1.14",
+  "einops==0.8.0",
+  "torchvision>=0.19",
+  "yacs==0.1.8",
+]
 # The showcase video of a round (tools/make_showcase.py): the drawing needs Pillow.
 showcase = ["pillow>=10.1"]
-# The test suite (python -m pytest tests -q); the showcase's tests draw with Pillow.
-test = ["pytest>=7", "worldcast[showcase]"]
+# The test suite (python -m pytest tests -q); the demo's tests import its extra.
+test = ["pytest>=7", "worldcast[demo]"]
+# WorldCast Live, the web demo (docs/demo.md).
+demo = [
+  "aiohttp>=3.9",
+  "pillow>=10.1",
+  "torchvision>=0.19",       # GPU workers: a JPEG encoder that releases the GIL (Pillow's holds it)
+]
+# Formatting and lint, at the versions CI runs.
+lint = ["black==26.5.1", "isort==9.0.2", "flake8==7.4.1"]
+# Development: tests, formatting and lint (pre-commit runs black, isort and flake8).
+dev = ["worldcast[test,lint]", "pre-commit>=3.5"]
 
 [project.urls]
 Homepage = "https://ziyang-ye.github.io/WorldCast-Page/"
-Paper = "https://arxiv.org/abs/2610.12412"
 Repository = "https://github.com/Ziyang-Ye/WorldCast"
+Paper = "https://arxiv.org/abs/2610.12412"
 
 [tool.setuptools.packages.find]
 include = ["worldcast", "worldcast.*"]
+
+[tool.setuptools.package-data]
+"worldcast.demo" = ["static/*", "static/**/*"]
+"worldcast.third_party.gim_dkm" = ["LICENSE", "README.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -78,6 +109,7 @@ filterwarnings = [
   "ignore:Deallocating Tensor that still has live PyObject references:UserWarning",
 ]
 
+# black and isort: line length 100, as .flake8.
 [tool.black]
 line-length = 100
 target-version = ["py310"]

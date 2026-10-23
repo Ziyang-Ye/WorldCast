@@ -18,8 +18,9 @@ Examples::
         --out-dir runs/examples/dust2_r09
 
     # every round of the index, each as long as it was recorded (docs/reproduce.md)
-    python tools/run_session.py --config weights/paths.yaml --config data/paths.yaml \\
-        --all-rounds --round-length --gpus 0,1,2 --out-dir runs/table3
+    python tools/run_session.py --config weights/paths.yaml \\
+        --config data/evaluation/eval/rounds.yaml --all-rounds --round-length --gpus 0,1,2 \\
+        --out-dir runs/table3
 
 Outputs ``<out-dir>/<round>/world_state/`` and
 ``<out-dir>/<round>/<media_id>/{latents.npy,client.json,client.log}``, where ``<round>`` is

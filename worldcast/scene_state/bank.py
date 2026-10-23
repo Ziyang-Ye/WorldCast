@@ -15,7 +15,16 @@ from numpy.typing import ArrayLike
 
 from worldcast.config.inference import MEMORY_BOUND
 
-from .geometry import NPIX, covered, per_camera_tans, tolerance, view_points, zbuffer
+from .geometry import (
+    NPIX,
+    covered,
+    per_camera_tans,
+    tolerance,
+    view_points,
+    zbuffer,
+    zbuffers,
+    zbuffers_of,
+)
 
 __all__ = [
     "MemoryBank",
@@ -83,7 +92,7 @@ class MemoryEntry:
     def zbuffers(self, points: np.ndarray) -> np.ndarray:
         """``points`` ``[n, 3]`` projected into this entry's cameras: float64 ``[n_views, NPIX]``
         axial depth, ``inf`` where no point lands."""
-        return np.stack([zbuffer(points, self.c2w[m], self.tans[m]) for m in range(self.n_views)])
+        return zbuffers(points, self.c2w, self.tans)
 
     def covered_by(self, zbuf: np.ndarray) -> np.ndarray:
         """``[n_views, NPIX]`` bool: this entry's surface pixels the z-buffers ``zbuf`` cover."""
@@ -148,23 +157,19 @@ def missing_coverage(
     tans = per_camera_tans(next_tans, len(cams))
     recent = np.asarray(recent_points, dtype=np.float64).reshape(-1, 3)
     n = len(candidates)
-    if n:
-        points = np.concatenate([e.points for e in candidates], 0)
-        group = np.concatenate(
-            [np.full(len(e.points), i, np.int64) for i, e in enumerate(candidates)]
-        )
     coverage = np.zeros(n, np.int64)
-    n_missing = 0
-    for m in range(len(cams)):
-        missing = ~np.isfinite(zbuffer(recent, cams[m], tans[m]))
-        n_missing += int(missing.sum())
-        if n:
-            z = zbuffer(points, cams[m], tans[m], group=group, n_groups=n)
+    missing = ~np.isfinite(zbuffers(recent, cams, tans))
+    if n and missing.any():
+        points = np.concatenate([e.points for e in candidates], 0)
+        group = np.repeat(np.arange(n), [len(e.points) for e in candidates])
+        for m in np.flatnonzero(missing.any(1)):
+            # only the missing pixels count
+            z = zbuffer(points, cams[m], tans[m], group=group, n_groups=n)[:, missing[m]]
             reference = z.min(0)
             with np.errstate(invalid="ignore"):
                 front = np.isfinite(z) & (z <= reference[None] + tolerance(reference)[None])
-            coverage += (front & missing[None]).sum(1)
-    return coverage, n_missing
+            coverage += front.sum(1)
+    return coverage, int(missing.sum())
 
 
 def pick_best(candidates: Sequence[MemoryEntry], coverage: np.ndarray) -> MemoryEntry | None:
@@ -203,6 +208,18 @@ class _Coverage:
     z: np.ndarray
     nearest: np.ndarray
     n_covered: int
+
+
+def _count_covered(entries: Sequence[MemoryEntry], coverages: Sequence[_Coverage]) -> list[int]:
+    """:meth:`MemoryEntry.covered_by` of each entry's nearest reprojected points, counted, in one
+    pass."""
+    flat = covered(
+        np.concatenate([c.nearest for c in coverages]),
+        np.concatenate([e.depth.reshape(-1) for e in entries]),
+        np.concatenate([e.hit.reshape(-1) for e in entries]),
+    )
+    starts = np.cumsum([0] + [e.n_views * NPIX for e in entries[:-1]])
+    return [int(n) for n in np.add.reduceat(flat, starts, dtype=np.int64)]
 
 
 class MemoryBank:
@@ -264,41 +281,54 @@ class MemoryBank:
         return PublishResult(True, self._withdraw_own() if own else [])
 
     @staticmethod
-    def _reproject(source: MemoryEntry, target: MemoryEntry) -> np.ndarray:
-        # z cached in float32 and compared in float64, as in the paper's runs: withdrawal follows
-        # the cast
-        return target.zbuffers(source.points).reshape(-1).astype(np.float32)
-
-    @staticmethod
     def _n_covered(entry: MemoryEntry, nearest: np.ndarray) -> int:
         return int(entry.covered_by(nearest.reshape(entry.n_views, NPIX)).sum())
 
     def _cover(self, entry: MemoryEntry, others: Sequence[MemoryEntry]) -> None:
         """Reproject a new own entry into the other own entries and theirs into it (``2
-        len(others)`` reprojections), and update every coverage."""
+        len(others)`` reprojections, :meth:`MemoryEntry.zbuffers`, each set of points into all the
+        cameras in one pass), and update every coverage."""
         slot = self._free_slots.pop()
         z = np.full((self.bound + 1, entry.n_views * NPIX), np.inf, np.float32)
-        for other in others:
-            theirs = self._coverage[other.uid]
-            theirs.z[slot] = self._reproject(entry, other)
-            np.minimum(theirs.nearest, theirs.z[slot], out=theirs.nearest)
-            theirs.n_covered = self._n_covered(other, theirs.nearest)
-            z[theirs.slot] = self._reproject(other, entry)
+        if others:
+            # z cached in float32 and compared in float64, as in the paper's runs: withdrawal
+            # follows the cast
+            ends = np.cumsum([other.n_views for other in others])
+            cams = np.concatenate([other.c2w for other in others])
+            into_others = zbuffers(entry.points, cams, np.concatenate([o.tans for o in others]))
+            into_others = into_others.astype(np.float32)
+            into_entry = zbuffers_of([other.points for other in others], entry.c2w, entry.tans)
+            into_entry = into_entry.reshape(len(others), -1).astype(np.float32)
+            coverages = [self._coverage[other.uid] for other in others]
+            for theirs, end, n_views, row in zip(
+                coverages, ends, (o.n_views for o in others), into_entry
+            ):
+                theirs.z[slot] = into_others[end - n_views : end].reshape(-1)
+                np.minimum(theirs.nearest, theirs.z[slot], out=theirs.nearest)
+                z[theirs.slot] = row
+            for theirs, n_covered in zip(coverages, _count_covered(others, coverages)):
+                theirs.n_covered = n_covered
         nearest = z.min(0).astype(np.float64)
         self._coverage[entry.uid] = _Coverage(slot, z, nearest, self._n_covered(entry, nearest))
 
     def _uncover(self, gone: MemoryEntry) -> None:
         """Take a withdrawn own entry out of the other own entries' coverage (no reprojection)."""
         slot = self._coverage.pop(gone.uid).slot
-        for other in self.entries[self.client]:
-            theirs = self._coverage[other.uid]
+        others = self.entries[self.client]
+        coverages = [self._coverage[other.uid] for other in others]
+        changed = []
+        for other, theirs in zip(others, coverages):
             z = theirs.z[slot]
             # only where the withdrawn entry was the nearest can the minimum change
             pixels = np.flatnonzero((z == theirs.nearest) & np.isfinite(z))
             z[:] = np.inf
             if pixels.size:
                 theirs.nearest[pixels] = theirs.z[:, pixels].min(0)
-                theirs.n_covered = self._n_covered(other, theirs.nearest)
+                changed.append((other, theirs))
+        if changed:
+            counts = _count_covered(*zip(*changed))
+            for (_, theirs), n_covered in zip(changed, counts):
+                theirs.n_covered = n_covered
         self._free_slots.append(slot)
 
     def _withdraw_own(self) -> list[MemoryEntry]:

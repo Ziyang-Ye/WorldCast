@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 import tests.scene_state.support as sw
+import worldcast.scene_state.bank as bank_module
 from worldcast.scene_state import MemoryBank, MemoryEntry
 from worldcast.scene_state.bank import missing_coverage, pick_best
 from worldcast.scene_state.geometry import NPIX
@@ -115,15 +116,17 @@ def _entries(owner: str, k: int, n: int, seed: int) -> list[MemoryEntry]:
 
 @pytest.fixture
 def reprojections(monkeypatch):
-    """Counts every reprojection (an entry's points projected into another entry's cameras)."""
+    """Counts every reprojection (an entry's points projected into another entry's four cameras),
+    however many of them the bank makes in one pass."""
     calls = [0]
-    zbuffers = MemoryEntry.zbuffers
+    for name in ("zbuffers", "zbuffers_of"):
+        original = getattr(bank_module, name)
 
-    def counted(self, points):
-        calls[0] += 1
-        return zbuffers(self, points)
+        def counted(points, c2w, tans, original=original, sets=name == "zbuffers_of"):
+            calls[0] += (len(points) if sets else 1) * len(c2w) // 4
+            return original(points, c2w, tans)
 
-    monkeypatch.setattr(MemoryEntry, "zbuffers", counted)
+        monkeypatch.setattr(bank_module, name, counted)
     return calls
 
 

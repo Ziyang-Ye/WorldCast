@@ -8,6 +8,7 @@ from worldcast.data.labels import (
     OBSERVER_SIGNAL_KEYS,
     FlashCurve,
     ScopeCurve,
+    frustum_rows,
     load_flash_curve,
     load_observer_signal_curves,
     load_observer_signals,
@@ -38,6 +39,29 @@ def test_visibility_rows_are_the_labels_at_the_windows_source_frames(tmp_path):
     np.savez(tmp_path / "nine.npz", _binary_visible=visible[:9], _binary_eval_valid=valid[:9])
     with pytest.raises(ValueError, match="hold 9 players, expected 10"):
         visibility_rows(tmp_path, "nine", np.arange(3))
+
+
+def test_frustum_rows_are_the_players_in_the_view_whether_or_not_their_label_is_known(tmp_path):
+    visible, valid = np.zeros((10, 6), bool), np.zeros((10, 6), bool)
+    frustum = np.zeros((10, 6), bool)
+    frustum[2] = [1, 1, 0, 0, 1, 1]  # player 2 in the view ...
+    valid[2] = [1, 0, 1, 1, 1, 1]  # ... its label known, but at frame 1, where it is not
+    visible[2] = [1, 0, 0, 0, 1, 0]
+    np.savez(
+        tmp_path / f"{MEDIA}.npz",
+        _binary_visible=visible,
+        _binary_eval_valid=valid,
+        _in_frustum=frustum,
+    )
+    got = frustum_rows(tmp_path, MEDIA, np.array([-2, 0, 1, 2, 4, 6]))
+    assert got.shape == (10, 6) and got.dtype == np.bool_
+    # outside the recording nobody is in the view; the unknown label at frame 1 is in the view
+    assert got[2].tolist() == [False, True, True, False, True, False] and not got[[0, 1, 3]].any()
+    with pytest.raises(FileNotFoundError, match="no visibility labels for absent"):
+        frustum_rows(tmp_path, "absent", np.arange(3))
+    np.savez(tmp_path / "nine.npz", _in_frustum=frustum[:9])
+    with pytest.raises(ValueError, match="hold 9 players, expected 10"):
+        frustum_rows(tmp_path, "nine", np.arange(3))
 
 
 def _curves(first_frame: int = 0, stride: int | None = 1) -> tuple[FlashCurve, ScopeCurve]:

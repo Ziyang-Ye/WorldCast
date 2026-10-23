@@ -8,9 +8,12 @@ from worldcast.data.latents import (
     FPS,
     FRAME_SIZE,
     RECENT,
+    SOURCE_FPS,
     SOURCE_FRAMES_PER_LATENT,
     TOKEN_GRID,
     VIDEO_FRAMES_PER_BLOCK,
+    WINDOW_SOURCE_FRAMES,
+    WINDOW_VIDEO_FRAMES,
     block_span,
     last_video_frames,
     latent_frame_count,
@@ -30,6 +33,8 @@ def test_a_block_is_a_second_of_video():
 
 def test_the_causal_vae_layout():
     assert video_frame_count(41) == 161 and latent_frame_count(161) == 41
+    # a ten-second window: 161 video frames over 321 source frames at 32 fps
+    assert (WINDOW_VIDEO_FRAMES, WINDOW_SOURCE_FRAMES, SOURCE_FPS) == (161, 321, 32.0)
     with pytest.raises(ValueError):
         latent_frame_count(160)
     assert video_frames_of(0) == [0] and video_frames_of(3) == [9, 10, 11, 12]

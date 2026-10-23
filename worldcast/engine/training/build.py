@@ -14,12 +14,12 @@ from torch import nn
 from torch.utils.data import Dataset
 
 from worldcast.config.training import TrainConfig
+from worldcast.data.controls import TICK_GATE_SECONDS
 from worldcast.data.map_mesh import MeshLibrary
 from worldcast.data.memory_selection import MemoryFrameSource
 from worldcast.data.recordings import MediaIndex
 from worldcast.data.stream import ResumableDataStream
 from worldcast.data.training import (
-    RAW_VIDEO_MAX_TICK_GAP_SECONDS,
     BucketWindows,
     RawVideoWindows,
     read_bucket_index,
@@ -227,7 +227,7 @@ def build_dataset(cfg: TrainConfig) -> Dataset:
         _require(cfg, "train_manifest")
         spec = WindowSpec(
             stage.latent_frames,
-            max_tick_gap_seconds=RAW_VIDEO_MAX_TICK_GAP_SECONDS,
+            max_tick_gap_seconds=TICK_GATE_SECONDS,
             camera_encoding=stage.camera_encoding,
         )
         return RawVideoWindows(d.train_manifest, spec=spec, dataset_root=d.dataset_root)

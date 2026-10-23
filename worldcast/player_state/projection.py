@@ -20,7 +20,13 @@ import torch
 
 from worldcast.data.camera import NEAR_U, camera_axes, half_angle_tangents
 from worldcast.data.controls import CONTROL_BUTTONS
-from worldcast.data.game import EYE_HEIGHT
+from worldcast.data.game import (
+    BODY_HEIGHT,
+    BODY_HEIGHT_CROUCHED,
+    EYE_HEIGHT,
+    PLAYER_WIDTH,
+    VFOV_DEGREES,
+)
 from worldcast.data.latents import FRAME_SIZE
 from worldcast.data.recordings import ALIVE_INDEX
 
@@ -34,12 +40,8 @@ from .states import (
 from .visibility import live_eligibility
 
 __all__ = [
-    "BODY_HEIGHT",
-    "BODY_HEIGHT_CROUCHED",
     "CROUCH_COLUMN",
-    "PLAYER_WIDTH",
     "RADIUS_MIN_CELLS",
-    "VFOV_DEGREES",
     "PlayerBoxes",
     "Projection",
     "angles_from_controls",
@@ -50,22 +52,12 @@ __all__ = [
     "table_angles",
 ]
 
-#: Vertical field of view the field projects with, degrees (16:9 Hor+; the horizontal one is the
-#: recordings' ``HFOV_DEGREES``). As trained: the rounded 73.74, not the ``tan(hfov / 2) * 9 / 16``
-#: of the rays and of retrieval (:func:`worldcast.data.camera.half_angle_tangents`); the two
-#: tangents differ by 5.6e-6.
-VFOV_DEGREES = 73.74
-#: Body height standing and crouched, u.
-BODY_HEIGHT = 72.0
-BODY_HEIGHT_CROUCHED = 54.0
 #: Column of the crouch button (``duck``) in the substep buttons (5); its held share sets the body
 #: height.
 CROUCH_COLUMN = CONTROL_BUTTONS.index("duck")
 #: Smallest projected radius, rows of the grid it is projected on; the largest is half the grid's
 #: height (6 on the 12 x 21 token grid).
 RADIUS_MIN_CELLS = 0.5
-#: A player's width, u (the engine's player hull): its box is as wide at the player's depth.
-PLAYER_WIDTH = 32.0
 
 
 @dataclass(frozen=True)
@@ -255,8 +247,8 @@ def player_boxes(
 
     The players are projected into the client's camera, its own row of ``states``, as the field
     projects them (:func:`project_players`), onto the frame's pixels: a box's bottom centre is the
-    player's feet, its height the body's (:func:`body_height`), its width :data:`PLAYER_WIDTH` at
-    that scale.
+    player's feet, its height the body's (:func:`body_height`), its width
+    :data:`~worldcast.data.game.PLAYER_WIDTH` at that scale.
 
     Args:
         states (torch.Tensor): ``[F, P, 6]`` every player's state per frame (u, degrees; the

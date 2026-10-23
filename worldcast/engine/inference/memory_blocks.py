@@ -2,11 +2,14 @@
 
 from collections.abc import Callable, Mapping, Sequence
 
+import torch
+
 from worldcast.data.memory_frames import MemoryBlock
+from worldcast.player_state.live import LivePart
 
 from .world_state import WorldState
 
-__all__ = ["BlockAtFn", "MemoryBlocks"]
+__all__ = ["BlockAtFn", "LiveMemoryBlocks", "MemoryBlocks"]
 
 #: ``(slot, window_start, f0) -> block | None``: the block of the player at ``slot`` at a published
 #: key, with the cameras the reader keys it at
@@ -89,3 +92,71 @@ class MemoryBlocks:
                 self.blocks.append(self.block_at(slot, published.window_start, published.f0))
                 n += 1
         return n
+
+
+class LiveMemoryBlocks(MemoryBlocks):
+    """The known blocks of a client that plays for as long as it likes: bounded.
+
+    A block that the memory bank holds no entry of any more, and that the scene state has
+    published (below its watermark), is replaced by ``None`` in :attr:`blocks` at every
+    :meth:`keep` (the scene state and the bank refer to blocks by index, so the list keeps its
+    length), with its latents and its ``live`` part: a block keeps those for as long as its entry
+    can be retrieved, and the message world state does not keep them that long. The keys of the
+    blocks seen and pending are pruned to the blocks the world state still holds.
+
+    Attributes:
+        latents (dict[tuple[str, int], torch.Tensor]): ``[4, 48, 24, 42]`` the latents of the
+            blocks, by ``(media_id, f0)``.
+        parts (dict[tuple[str, int], LivePart]): their ``live`` parts.
+        vanished (int): blocks whose ``live`` part was gone when they were to be admitted: dropped.
+        expired (int): pending blocks whose ``scene`` part left the world state before their
+            causal cut passed: dropped, they cannot be admitted any more.
+    """
+
+    def __init__(self, *, client: str, owners: Mapping[str, int], block_at: BlockAtFn) -> None:
+        super().__init__(client=client, owners=owners, block_at=block_at)
+        self.latents: dict[tuple[str, int], torch.Tensor] = {}
+        self.parts: dict[tuple[str, int], LivePart] = {}
+        self.vanished = self.expired = 0
+        self._published: set[int] = set()  # the indices below the watermark that hold a block
+        self._published_to = 0  # the watermark of the newest keep
+
+    def admit(
+        self, world_state: WorldState, *, t_target: int, others: Sequence[str], max_wait_s: float
+    ) -> int:
+        """:meth:`MemoryBlocks.admit`, keeping each admitted block's ``live`` part; a block whose
+        part is gone is dropped and counted in :attr:`vanished` (the blocks added by this call are
+        referred to by nothing yet, so the indices stay)."""
+        before = len(self.blocks)
+        admitted = super().admit(
+            world_state, t_target=t_target, others=others, max_wait_s=max_wait_s
+        )
+        added = [block for block in self.blocks[before:] if block is not None]
+        self.vanished += admitted - len(added)
+        self.blocks[before:] = added
+        for block in added:
+            self.parts[(block.media_id, block.f0)] = world_state.live_part(block.media_id, block.f0)
+        return len(added)
+
+    def keep(self, world_state: WorldState, resident: set[int], watermark: int) -> None:
+        """Forget what nothing can retrieve any more.
+
+        Args:
+            world_state (WorldState): the message world state, for the blocks it still holds.
+            resident (set[int]): the indices of the blocks the bank holds entries of.
+            watermark (int): the scene state's first block not yet published
+                (:attr:`~worldcast.scene_state.SceneState.watermark`).
+        """
+        self._published.update(range(self._published_to, watermark))
+        self._published_to = watermark
+        for index in self._published - resident:
+            block = self.blocks[index]
+            for held in (self.latents, self.parts):
+                held.pop((block.media_id, block.f0), None)
+            self.blocks[index] = None
+        self._published &= resident
+        held = {(m, p.t_first) for m in self.owners for p in world_state.published_blocks(m)}
+        self._seen &= held
+        expired = self._pending - held
+        self._pending -= expired
+        self.expired += len(expired)

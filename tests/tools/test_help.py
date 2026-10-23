@@ -14,15 +14,26 @@ def test_every_tool_has_its_test_module():
     tested = {path.stem.removeprefix("test_") for path in Path(__file__).parent.glob("test_*.py")}
     assert tested == {*NAMES, "help", "examples_scripts"}
     assert NAMES == [
+        "bench_live",
+        "bench_realtime",
+        "build_demo_library",
         "check_examples",
         "decode",
+        "download_eval_data",
         "download_examples",
         "download_weights",
         "evaluate",
+        "evaluate_paper",
+        "make_noscene_generator",
+        "make_overviews",
         "make_prompt_embedding",
         "make_showcase",
+        "prepare_data",
+        "replay_live",
         "run_client",
         "run_session",
+        "serve_demo",
+        "setup_demo",
         "train",
         "verify_reference",
     ]

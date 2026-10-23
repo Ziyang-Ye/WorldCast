@@ -21,7 +21,6 @@ import torch
 from torch.utils.data import Dataset
 
 from .controls import AlignmentError, align_ticks_to_video_frames
-from .game import TICK_RATE
 from .latent_cache import load_window_latents
 from .latents import SOURCE_FRAMES_PER_VIDEO_FRAME, source_span, window_key
 from .memory_selection import (
@@ -45,7 +44,6 @@ __all__ = [
     "BUCKET_NAMES",
     "BUCKET_WEIGHTS",
     "DENSITY_EXPONENT",
-    "RAW_VIDEO_MAX_TICK_GAP_SECONDS",
     "RETRY_ATTEMPTS",
     "RETRY_ATTEMPTS_MEMORY",
     "RETRY_STRIDE",
@@ -64,7 +62,8 @@ __all__ = [
 BUCKET_NAMES = ("q00-01", "q01-03", "q03-05", "q05-07", "q07-10")
 #: The sampling weight of each file's windows, as the paper's stages 2-4 drew them: solved for the
 #: paper's four files so that, after the zero-pair floor, each map is drawn a quarter of the time.
-#: ``data.bucket_weights`` sets them for other files.
+#: ``tools/prepare_data.py buckets weights`` solves them for other files; ``data.bucket_weights``
+#: sets them.
 BUCKET_WEIGHTS = (0.687417402, 0.86527334, 1.0, 0.92999783, 1.0)
 #: A window's weight is its bucket's times ``(1 + visible pairs) ** DENSITY_EXPONENT``.
 DENSITY_EXPONENT = 0.5
@@ -75,8 +74,6 @@ RETRY_STRIDE = 7919
 #: Attempts per item: without memory frames, and with (most windows have no acceptable target).
 RETRY_ATTEMPTS = 8
 RETRY_ATTEMPTS_MEMORY = 64
-#: Largest tolerated tick gap and frame-endpoint lag of the raw-video windows of stage 1, seconds.
-RAW_VIDEO_MAX_TICK_GAP_SECONDS = 1.5 / TICK_RATE
 
 
 # ==================================================================== the bucket index and weights
@@ -262,7 +259,7 @@ class BucketWindows(Dataset):
 
 
 # ============================================================================= raw video (stage 1)
-#: The fields of a raw-video manifest record (docs/data.md). ``video_frames`` counts the
+#: The fields of a raw-video manifest record (docs/training.md). ``video_frames`` counts the
 #: recording's source frames and ``pixel_frames`` the window's video frames. A record may also name
 #: ``skip_frame``, the source frames per video frame, which the paper fixes at 2.
 _MANIFEST_FIELDS = (
@@ -290,7 +287,7 @@ _MANIFEST_FIELDS = (
 class RawVideoWindows(Dataset):
     """The stage-1 windows of a raw-video manifest, decoded from the videos.
 
-    The manifest is JSONL, one record per media (docs/data.md): the fields of
+    The manifest is JSONL, one record per media (docs/training.md): the fields of
     :data:`_MANIFEST_FIELDS`, and ``sample_weight`` per record or ``window_sample_weights`` per
     window (all records or none). Relative paths resolve against ``dataset_root``.
 

@@ -46,6 +46,8 @@ def test_importing_the_packages_loads_no_torch():
         "assert 'torch' not in sys.modules and 'numpy' not in sys.modules\n"
         "from worldcast.engine.inference import ServingOptions\n"
         "assert ServingOptions().decoder == 'wan' and 'torch' not in sys.modules\n"
+        "from worldcast.engine.inference import FieldRows\n"
+        "assert FieldRows.HIDDEN == 3 and 'torch' not in sys.modules\n"
     )
     repo = Path(__file__).resolve().parents[2]
     result = subprocess.run([sys.executable, "-c", code], cwd=repo, capture_output=True, text=True)

@@ -161,7 +161,10 @@ def test_the_distillation_takes_the_global_clip_only():
 
 
 def test_validation_scores_ten_second_windows_in_twenty_steps():
-    validated = {"validation.interval": 1000, "validation.index": "eval64_index.jsonl"}
+    validated = {
+        "validation.interval": 1000,
+        "validation.index": "configs/data/validation_index.jsonl",
+    }
     assert paper_config("3", validated).validation.interval == 1000
     for stage in ("1", "4"):
         with pytest.raises(ValueError, match="validation scores 41-latent windows"):

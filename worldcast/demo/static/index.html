@@ -1,0 +1,43 @@
+<!doctype html>
+<!-- WorldCast Live: lobby, seat picker, play view and spectator grid in one page (hash routes; see app.js). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WorldCast Live</title>
+<meta name="description" content="Play inside WorldCast, a distributed multiplayer world model: each player's view is generated on its own GPU.">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
+<meta name="format-detection" content="telephone=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="WorldCast">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="preload" href="/static/fonts/inter-tight-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/inter-latin-opsz-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="nav" id="nav">
+  <div class="wrap nav-bar">
+    <a class="brand" href="#/" aria-label="WorldCast Live, lobby"><img src="/static/favicon.svg" alt="">WorldCast <span class="live-badge">Live</span></a>
+    <span class="gpu-pill" id="gpu-pill" title=""><span class="dot"></span><span id="gpu-text">Connecting</span></span>
+    <a class="nav-link" href="https://ziyang-ye.github.io/WorldCast-Page/" target="_blank" rel="noopener">Project page</a>
+  </div>
+</header>
+<main id="app">
+  <div class="wrap" id="unsupported" hidden><div class="empty"><strong>This browser cannot run WorldCast Live.</strong>Use a current Chrome, Edge, Firefox or Safari.</div></div>
+  <noscript><div class="wrap"><div class="empty"><strong>WorldCast Live needs JavaScript.</strong>Turn it on for this site, then reload.</div></div></noscript>
+</main>
+<script>
+// app.js marks the page when it runs: a browser that cannot load or parse the page's scripts says so
+addEventListener('DOMContentLoaded', function () {
+  if (!document.documentElement.dataset.ready) document.getElementById('unsupported').hidden = false;
+});
+</script>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

@@ -5,7 +5,14 @@ from pathlib import Path
 import pytest
 
 from worldcast.config import InferenceConfig, config_to_dict, load_config
-from worldcast.config.inference import MEMORY_BOUND, PLAYER_STATE_SOURCES, PathsConfig
+from worldcast.config.inference import (
+    IDLE_CONTEXT_MODES,
+    MEMORY_BOUND,
+    PLAYER_STATE_SOURCES,
+    WALL_KEY_MODES,
+    PathsConfig,
+)
+from worldcast.config.loader import parse_overrides
 from worldcast.data.latents import BLOCK
 
 REPO = Path(__file__).resolve().parents[2]
@@ -19,13 +26,38 @@ def test_the_defaults_are_the_papers_settings():
     assert InferenceConfig.from_dict(config_to_dict(cfg)) == cfg
 
 
-def test_the_player_states_come_from_the_recording_or_the_closed_loop():
-    assert PLAYER_STATE_SOURCES == ("gt", "predicted")
+def test_the_player_states_come_from_the_recording_the_closed_loop_or_live_controls():
+    assert PLAYER_STATE_SOURCES == ("gt", "predicted", "live")
     for source in PLAYER_STATE_SOURCES:
         cfg = InferenceConfig().with_overrides({"player_state.source": source})
         assert cfg.player_state.source == source
-    with pytest.raises(ValueError, match="player_state.source"):
-        InferenceConfig().with_overrides({"player_state.source": "unknown"})
+
+
+def test_live_play_has_settings_of_its_own_whose_defaults_are_the_releases():
+    cfg = InferenceConfig()
+    assert IDLE_CONTEXT_MODES == ("none", "freeze")
+    live = cfg.live
+    assert (live.idle_context, live.idle_with_peers, live.refresh) == ("none", False, False)
+    live = cfg.with_overrides({"live.idle_context": "freeze", "live.idle_with_peers": True}).live
+    assert (live.idle_context, live.idle_with_peers) == ("freeze", True)
+    # each value as YAML reads it, from a file or --set
+    sets = ["live.idle_context=none", "live.idle_with_peers=on", "live.refresh=on"]
+    live = load_config(overrides=parse_overrides(sets)).live
+    assert (live.idle_context, live.idle_with_peers, live.refresh) == ("none", True, True)
+    assert WALL_KEY_MODES == ("held", "edge", "walls", "guard") and cfg.live.wall_keys == "held"
+    for mode in WALL_KEY_MODES:
+        assert cfg.with_overrides({"live.wall_keys": mode}).live.wall_keys == mode
+    for bad in (
+        {"live.idle_context": "refresh"},
+        {"live.idle_context": "hold"},
+        {"live.wall_keys": "released"},
+        {"live.wall_keys": True},
+        {"live.idle_with_peers": "yes"},
+        {"live.refresh": "on"},
+        {"live.refresh_every": 30},
+    ):
+        with pytest.raises(ValueError, match="live"):
+            cfg.with_overrides(bad)
 
 
 def test_overrides(tmp_path):

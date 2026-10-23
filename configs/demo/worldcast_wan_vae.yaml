@@ -1,0 +1,10 @@
+# The original Wan2.2 VAE, the paper's frames, decoded on a second card (docs/demo.md, "The original VAE on a second card"). Merge it
+# over configs/demo/worldcast.yaml on a worker that sees two GPUs: the generator runs on the first, the decoder on the second,
+# and the next block is generated while the frames of this one are decoded:
+#   CUDA_VISIBLE_DEVICES=0,1 python tools/serve_demo.py --role worker --config configs/demo/worldcast.yaml \
+#       --config configs/demo/worldcast_wan_vae.yaml --set play.fps=11 ...
+# play.fps is the display rate: give it a rate the decoder sustains (docs/demo.md has what each card does).
+
+client:
+  worldcast:
+    serving: {decoder: wan, decoder_device: 'cuda:1'}

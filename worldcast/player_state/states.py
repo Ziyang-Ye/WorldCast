@@ -29,6 +29,7 @@ rows, as trained). What the field writes of a player besides geometry is
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 
 from worldcast.data.controls import CAMERA_DELTA_SCALE
@@ -37,6 +38,7 @@ from worldcast.data.labels import OBSERVER_SIGNAL_KEYS
 from worldcast.data.latents import (
     BLOCK,
     VIDEO_FRAMES_PER_LATENT,
+    last_video_frame,
     last_video_frames,
     latent_frame_count,
     video_frames_of,
@@ -63,6 +65,7 @@ __all__ = [
     "PlayerState",
     "camera_turns",
     "check_block_alive_agreement",
+    "continuous_block_state",
     "continuous_row_state",
     "death_state_for_table",
     "derive_death_state",
@@ -71,6 +74,7 @@ __all__ = [
     "held_fraction",
     "integrate_camera_angles",
     "latent_frame_rows",
+    "memory_continuous_columns",
     "owned_rows",
     "pack_substeps",
     "player_state_conditions",
@@ -267,6 +271,66 @@ def continuous_row_state(batch: Mapping[str, torch.Tensor]) -> torch.Tensor:
     columns = yaw.new_zeros(*yaw.shape, CONTINUOUS_WIDTH)
     _write_columns(columns, yaw, pitch, derive_death_state(latent_states), slice(None))
     return columns
+
+
+def continuous_block_state(
+    columns: torch.Tensor, batch: Mapping[str, torch.Tensor], s: int, shift: int = 0
+) -> None:
+    """Write the continuous columns of block ``s`` (latent frames ``s .. s+3``) of the round
+    again, in place, after its rows changed: :func:`continuous_row_state`'s, from the rows up to
+    the block's last, the yaw and pitch of latent frame ``s - 1``, which the block does not change,
+    and the turns of the block's rows.
+
+    The yaw is taken on from latent frame ``s - 1`` as the pitch is, not integrated from row 0: a
+    round that slides has no row 0 of its own to integrate from. It is the yaw of
+    :func:`continuous_row_state` to float32 rounding (about 1.5e-5 degrees per block). The turns
+    are taken from the row before the block (whose turn is in the angles of latent frame ``s - 1``
+    already; :func:`camera_turns` zeroes the first row it is given), so that the block's first row
+    turns as every other.
+
+    Args:
+        columns (torch.Tensor): ``[B, F, P, 7]`` the round's columns
+            (:func:`continuous_row_state`), up to date before latent frame ``s``.
+        batch (Mapping[str, torch.Tensor]): the round (``player_states``,
+            ``player_control_substeps`` and ``player_control_substep_valid``).
+        s (int): the block's first latent frame.
+        shift (int): the latent frames the round has slid by. A player dead or absent from the
+            round's first row counts its time since death from the session's first row
+            (:func:`derive_death_state` counts from the round's: 26-29 on the round that slid
+            where the session's count is 32).
+    """
+    s = int(s)
+    first, rows = last_video_frame(s - 1) + 1, last_video_frame(s + BLOCK - 1) + 1
+    # the turns of the block's rows (camera_turns: the turn columns zeroed where invalid by
+    # pack_substeps and again by camera_turns, summed by torch)
+    valid = batch["player_control_substep_valid"].numpy()[:, :, first:rows].astype(np.float32)
+    turns = batch["player_control_substeps"].numpy()[:, :, first:rows, :, -2:]
+    turn_pitch, turn_yaw = (
+        torch.from_numpy(turns[..., k] * valid * valid).sum(-1).numpy() * CAMERA_DELTA_SCALE
+        for k in (0, 1)
+    )
+    read = slice(VIDEO_FRAMES_PER_LATENT - 1, None, VIDEO_FRAMES_PER_LATENT)  # latent frames' rows
+    before = columns.numpy()[:, s - 1]
+    yaw = before[..., CONT_YAW_INDEX - STATE_BASE_DIM, None]
+    yaw = yaw + torch.from_numpy(turn_yaw).cumsum(dim=2).numpy()
+    yaw = np.remainder(yaw + np.float32(180.0), np.float32(360.0)) - np.float32(180.0)
+    low, high = np.float32(PITCH_MIN_DEGREES), np.float32(PITCH_MAX_DEGREES)
+    pitch = np.empty_like(turn_pitch)
+    current = before[..., CONT_PITCH_INDEX - STATE_BASE_DIM]
+    for row in range(turn_pitch.shape[2]):
+        current = pitch[:, :, row] = np.minimum(
+            np.maximum(current + turn_pitch[:, :, row], low), high
+        )
+    latent_states = batch["player_states"][:, :, last_video_frames(0, s + BLOCK)]
+    death = derive_death_state(latent_states.permute(0, 2, 1, 3), offset=int(shift))
+    frozen = death.frozen_states[:, s:, ..., :3]
+    out = columns.numpy()[:, s : s + BLOCK]
+    lo, hi = CONT_FROZEN_XYZ
+    out[..., CONT_YAW_INDEX - STATE_BASE_DIM] = yaw[:, :, read].transpose(0, 2, 1)
+    out[..., CONT_PITCH_INDEX - STATE_BASE_DIM] = pitch[:, :, read].transpose(0, 2, 1)
+    out[..., CONT_CORPSE_INDEX - STATE_BASE_DIM] = death.corpse[:, s:].numpy()
+    out[..., CONT_TSD_INDEX - STATE_BASE_DIM] = death.time_since_death[:, s:].numpy()
+    out[..., lo - STATE_BASE_DIM : hi - STATE_BASE_DIM] = frozen.numpy()
 
 
 def _write_columns(
@@ -507,7 +571,7 @@ def has_continuous_columns(states: torch.Tensor) -> bool:
     )
 
 
-def derive_death_state(states: torch.Tensor) -> DeathState:
+def derive_death_state(states: torch.Tensor, offset: int = 0) -> DeathState:
     """Death state of a contiguous table (one life per round).
 
     The position after death freezes at the last alive frame. A player dead from frame 0 has no
@@ -516,6 +580,8 @@ def derive_death_state(states: torch.Tensor) -> DeathState:
 
     Args:
         states (torch.Tensor): ``[B, F, P, >= 6]`` table, alive at column 5.
+        offset (int): frames a player dead from frame 0 has been dead before the table's first
+            frame, which its time since death counts (a table that is a part of a longer round).
 
     Returns:
         DeathState: ``dying``, ``time_since_death`` and ``frozen_states`` in the table's dtype.
@@ -539,7 +605,7 @@ def derive_death_state(states: torch.Tensor) -> DeathState:
 
     dead = ~alive
     corpse = dead & (last_alive_idx >= 0)
-    since = idx - last_alive_idx
+    since = idx - last_alive_idx + offset * (last_alive_idx < 0)
     time_since_death = (since.clamp(min=0).to(states.dtype) * dead.to(states.dtype)).clamp(
         max=DEATH_TSD_CAP
     )

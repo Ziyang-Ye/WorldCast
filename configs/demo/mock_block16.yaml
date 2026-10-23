@@ -1,0 +1,11 @@
+# The mock client with WorldCast's block size: 16 frames (4 latent frames), a little faster than its display
+# (550 ms of fake denoising + 16 x 22 ms of fake decoding = 0.9 s per block of 1 s at the default 16 fps). It shows
+# what the block size means for latency before a GPU is attached:
+#   python tools/serve_demo.py --role local --config configs/demo/mock_block16.yaml
+
+client:
+  mock:
+    frames_per_block: 16
+    denoise_ms: 550.0
+    decode_ms: 22.0
+    jitter_ms: 30.0

@@ -21,13 +21,20 @@ from worldcast.modeling.wan22.model import (
     worldcast_module,
 )
 from worldcast.utils.precision import GENERATOR_DTYPE, generator_dtype
-from worldcast.utils.weights import is_safetensors, module_from_state, read_state_dict
+from worldcast.utils.weights import (
+    check_state_dict,
+    is_safetensors,
+    module_from_state,
+    read_state_dict,
+)
 
 __all__ = [
     "CHECKPOINT_ROOT",
     "EMA_KEY",
+    "NOSCENE_FILE",
     "ONLINE_KEY",
     "build_inference_generator",
+    "client_weights",
     "generator_config_from_snapshot",
     "load_generator",
     "optional_modules",
@@ -42,6 +49,10 @@ CHECKPOINT_ROOT = "model."
 #: online weights (resumed).
 EMA_KEY = "generator_ema"
 ONLINE_KEY = "generator"
+
+#: The client weight file of the four-step generator trained without scene state (stage
+#: ``4_noscene``), as ``tools/make_noscene_generator.py`` names it: not a release file.
+NOSCENE_FILE = "worldcast_4step_noscene_bf16.safetensors"
 
 #: ``config.json`` keys of the Wan2.2-TI2V-5B snapshot that set :class:`GeneratorConfig` fields.
 _SNAPSHOT_KEYS = (
@@ -120,6 +131,48 @@ def optional_modules(config: GeneratorConfig, keys: Collection[str]) -> Generato
         observer_signals=config.observer_signals if "observer_signals" in held else None,
         ray_embedding="ray_embedding" in held,
     )
+
+
+def client_weights(
+    state: Mapping[str, torch.Tensor], config: GeneratorConfig
+) -> tuple[dict[str, torch.Tensor], dict[str, list[str]]]:
+    """The weights of the inference generator of ``config`` out of a checkpoint's ``state``, as a
+    client's file holds them: every key of the generator, cast to bf16 as in the paper's runs; the
+    keys of the modules of :data:`~worldcast.modeling.wan22.model.WORLDCAST_MODULES` it does not
+    build (the visibility probe; the ray and observer-signal embeddings of a generator without
+    scene state, which a checkpoint may carry unused) are left out.
+
+    Args:
+        state (Mapping[str, Tensor]): the checkpoint's weights under the generator's key names
+            (:func:`read_generator`).
+        config (GeneratorConfig): the generator, for example a training stage's
+            (:func:`worldcast.engine.stage.generator_config`).
+
+    Returns:
+        tuple[dict[str, Tensor], dict[str, list[str]]]: the generator's weights, bf16, and the keys
+        left out, sorted, by module.
+
+    Raises:
+        KeyError: ``state`` holds a key of the backbone or of a module the generator builds that is
+            not the generator's, or lacks one of the generator's keys.
+        ValueError: a weight has another shape than the generator's.
+    """
+    config = dataclasses.replace(config, visibility_probe=None)
+    with torch.device("meta"):
+        expected = WorldCastGenerator(config).state_dict()
+    kept: dict[str, torch.Tensor] = {}
+    dropped: dict[str, list[str]] = {}
+    for key, value in state.items():
+        module = worldcast_module(key)
+        if key in expected or module is None or getattr(config, module):
+            kept[key] = value
+        else:
+            dropped.setdefault(module, []).append(key)
+    missing = check_state_dict(expected, kept)
+    if missing:
+        raise KeyError(f"the weights lack keys of the generator: {missing[:8]}")
+    kept = {key: value.to(GENERATOR_DTYPE) for key, value in kept.items()}
+    return kept, {module: sorted(keys) for module, keys in sorted(dropped.items())}
 
 
 def build_inference_generator(

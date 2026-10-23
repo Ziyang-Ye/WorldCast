@@ -233,3 +233,52 @@ def test_gather_refuses_a_memory_input_of_another_shape():
         gather_window({**batch, "memory_frames_weapon_ids": per_player}, WITH_MEMORY)
     without_memory = {k: v for k, v in narrow.items() if k != "memory_frames_c2w"}
     gather_window(without_memory, WITHOUT_MEMORY)  # the memory inputs are not read
+
+
+# ------------------------------------------------------------------------------------- the slide
+#: The entries of the round batch that are flags of the players' video frames.
+FLAGS = ("player_control_substep_valid", "client_visibility", "client_visibility_valid")
+
+
+def _slid(frames: int, keep: int, dropped: int) -> list[float]:
+    """The index of each frame of an entry of ``frames`` frames after a slide: the first ``keep``
+    stay, the ``dropped`` after them are gone, the vacated tail repeats the last frame."""
+    moved = list(range(keep + dropped, frames))
+    return [float(f) for f in [*range(keep), *moved, *[frames - 1] * dropped]]
+
+
+def _along(value: torch.Tensor, axis: int) -> list[float]:
+    """The first element of each index of ``axis`` of an index tensor of :func:`_index`."""
+    return value.movedim(axis, 0).reshape(value.shape[axis], -1)[:, 0].tolist()
+
+
+def test_a_slide_moves_every_per_frame_entry_of_the_table_and_the_clients_cameras():
+    """A round that slides keeps its first frame and latent frame 1 (video frames 0-4), moves the
+    frames after them up by a block, and repeats the last frame in the vacated four latent frames
+    (sixteen video frames); the entries of the table that the batch has are moved, and nothing
+    else."""
+    batch = _round_batch()
+    for key in FLAGS:  # a flag tells its frame by the parity of the frame's index
+        even = torch.arange(VIDEO_FRAMES) % 2 == 0
+        batch[key] = even.view(1, 1, -1, *[1] * (batch[key].ndim - 3)).expand_as(batch[key]).clone()
+    others = {k: v.clone() for k, v in batch.items() if isinstance(v, torch.Tensor)}
+    W.slide_window_entries(batch)
+    moved = set()
+    for key, entry in W.WINDOW_ENTRIES.items():
+        if key not in batch:
+            continue
+        moved.add(key)
+        latent = entry.frames == "latent"
+        count = FRAMES if latent else VIDEO_FRAMES
+        expected = _slid(count, 2, 4) if latent else _slid(count, 5, 16)
+        if key in FLAGS:
+            expected = [float(int(f) % 2 == 0) for f in expected]
+        assert [float(v) for v in _along(batch[key], entry.axis)] == expected, key
+    for key, offset in (("window_c2w", 0.0), ("window_tans", 1.0)):  # as _round_batch indexes them
+        moved.add(key)
+        assert _along(batch[key], 1) == [f + offset for f in _slid(FRAMES, 2, 4)], key
+    assert moved >= {"latents", "buttons", "player_states", "client_visibility", "window_c2w"}
+    for key, value in others.items():
+        if key not in moved:
+            assert torch.equal(batch[key], value), key
+    assert batch["media_id"] == ["m0"]  # what is no tensor stays

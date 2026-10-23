@@ -119,6 +119,37 @@ def test_streaming_decoder_rejects_bad_inputs(tiny_vae):
             decoder.decode_chunk(torch.zeros(shape), scale)
 
 
+def _decoding_weights(vae):
+    return [w for m in (vae.conv2, vae.decoder) for w in m.parameters() if w.dim() in (4, 5)]
+
+
+def test_the_channels_last_decoder_is_the_same_decode_in_another_layout():
+    """Off, the layout and the pixels are the default's, bit for bit; on, the decoding convolutions'
+    weights are channels-last (by rank) with the same values, the pixels the same shape and dtype
+    and within the rounding of another kernel, the encoder untouched; off again gives the first
+    pixels.
+    """
+    from tests.modeling.support import make_tiny_vae
+
+    vae, z, scale = make_tiny_vae(), _latents(3, seed=49), random_latent_scale(48)
+    before = vae.decode(z, scale)
+    weights = [w.clone() for w in _decoding_weights(vae)]
+    vae.set_decoder_channels_last(False)
+    assert torch.equal(vae.decode(z, scale), before)
+    assert all(w.is_contiguous() for w in _decoding_weights(vae))
+    vae.set_decoder_channels_last(True)
+    layouts = {w.dim(): w for w in _decoding_weights(vae)}
+    assert layouts[5].is_contiguous(memory_format=torch.channels_last_3d)
+    assert layouts[4].is_contiguous(memory_format=torch.channels_last)
+    assert all(torch.equal(a, b) for a, b in zip(weights, _decoding_weights(vae)))
+    assert all(w.is_contiguous() for w in vae.encoder.parameters())
+    after = vae.decode(z, scale)
+    assert after.shape == before.shape and after.dtype == before.dtype
+    assert torch.allclose(after, before, atol=1e-4) and not after.requires_grad
+    vae.set_decoder_channels_last(False)
+    assert torch.equal(vae.decode(z, scale), before)
+
+
 def test_load_assigns_the_checkpoint_without_a_random_draw(tiny_vae, tmp_path, monkeypatch):
     """The loader builds the Wan2.2 VAE; here its class is built at the tiny size."""
     path = tmp_path / V.VAE_CHECKPOINT_NAME

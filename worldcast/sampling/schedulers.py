@@ -12,6 +12,7 @@ from typing import NamedTuple, TypeVar
 import numpy as np
 import torch
 
+from worldcast.data.latents import BLOCK
 from worldcast.utils.precision import GENERATOR_DTYPE
 
 __all__ = [
@@ -20,6 +21,7 @@ __all__ = [
     "BlockCall",
     "ContextWriteNoise",
     "DenoisingExit",
+    "EntryNoiseStream",
     "FlowMatchScheduler",
     "context_noise_seed",
     "denoise_block",
@@ -88,13 +90,30 @@ class FlowMatchScheduler:
         return ((1 - sigma) * clean + sigma * noise).type_as(noise)
 
 
+def _table_on(
+    scheduler: FlowMatchScheduler, name: str, device: torch.device, dtype: torch.dtype
+) -> torch.Tensor:
+    """``scheduler.<name>`` (``"sigmas"`` or ``"timesteps"``) on ``device`` in ``dtype``, converted
+    once per scheduler and kept. A copy of the host's table is a copy from pageable memory: it
+    waits for the work queued before it on the stream, so converting on every call held the
+    launch of the next generator call back behind the GPU's last one. The values are those of the
+    conversion on every call; a table assigned anew to the scheduler is converted again."""
+    source: torch.Tensor = getattr(scheduler, name)
+    kept: dict = scheduler.__dict__.setdefault("_converted", {})
+    key = (name, torch.device(device), dtype)
+    entry = kept.get(key)
+    if entry is None or entry[0] is not source:
+        entry = kept[key] = (source, source.to(device=device, dtype=dtype))
+    return entry[1]
+
+
 def nearest_index(
     timestep: torch.Tensor, scheduler: FlowMatchScheduler, dtype: torch.dtype = torch.float64
 ) -> torch.Tensor:
     """The table entry nearest each timestep: the first index minimising ``|t - t_i|`` in
     ``dtype``, ``[N]`` long for the ``N`` timesteps of any shape. The bf16 timesteps the generator
     sees (1000 / 936 / 832 / 624) map to indices 0 / 255 / 502 / 751."""
-    level_t = scheduler.timesteps.to(device=timestep.device, dtype=dtype)
+    level_t = _table_on(scheduler, "timesteps", timestep.device, dtype)
     return (timestep.reshape(-1, 1) - level_t).abs().argmin(dim=1)
 
 
@@ -117,7 +136,7 @@ def table_sigma(
     Returns:
         Tensor: ``timestep.shape`` followed by ``like.ndim - timestep.ndim`` singleton axes.
     """
-    level_sigma = scheduler.sigmas.to(device=like.device, dtype=dtype)
+    level_sigma = _table_on(scheduler, "sigmas", like.device, dtype)
     nearest = nearest_index(timestep, scheduler, dtype)
     singleton_axes = (1,) * (like.ndim - timestep.ndim)
     return level_sigma[nearest].reshape(*timestep.shape, *singleton_axes)
@@ -410,3 +429,48 @@ def entry_noise(
     shape = (1, int(requested_num_latents) - 1, *[int(v) for v in latent_shape])
     full = torch.randn(shape, generator=g)
     return full[:, : int(num_latents) - 1].to(device, dtype)
+
+
+class EntryNoiseStream:
+    """The entry noise of a rollout that has no length (live play), drawn one block at a time.
+
+    The same noise as :func:`entry_noise`, whatever length that was asked for: the CPU normal
+    kernel fills 16 values at a time from one stream of a generator, and a latent frame is a
+    multiple of 16, so a draw in pieces of whole blocks is the draw in one piece. Block ``s`` is
+    ``entry_noise(...)[:, s - 1 : s + 3]`` of any length that holds it. The blocks are drawn in
+    order, as a rollout generates them; the global RNG is not touched.
+
+    Args:
+        seed (int): the rollout's seed.
+        latent_shape (Sequence[int]): ``(C, H, W)`` of a latent frame.
+        device (torch.device | str | None): where the noise goes.
+        dtype (torch.dtype): its dtype, the generator's.
+    """
+
+    def __init__(
+        self,
+        seed: int,
+        latent_shape: Sequence[int],
+        *,
+        device: torch.device | str | None = None,
+        dtype: torch.dtype = GENERATOR_DTYPE,
+    ) -> None:
+        self._generator = torch.Generator(device="cpu").manual_seed(int(seed))
+        self._shape = (1, BLOCK, *[int(v) for v in latent_shape])
+        self._device, self._dtype = device, dtype
+        self._next = 1
+
+    def block(self, start: int) -> torch.Tensor:
+        """The entry noise ``[1, 4, C, H, W]`` of the block at latent frame ``start``.
+
+        Raises:
+            ValueError: ``start`` is not the first latent frame of the next block (the stream is
+                drawn in order, each block once).
+        """
+        if int(start) != self._next:
+            raise ValueError(
+                f"the entry noise is drawn block by block, each once: the next is the block at"
+                f" latent frame {self._next}, not {int(start)}"
+            )
+        self._next += BLOCK
+        return torch.randn(self._shape, generator=self._generator).to(self._device, self._dtype)

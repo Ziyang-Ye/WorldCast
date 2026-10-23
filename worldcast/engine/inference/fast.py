@@ -12,10 +12,11 @@ call runs the pieces of :meth:`WorldCastGenerator.forward` (``CallPlan.at``, ``p
 * optionally, CUDA graphs of the DiT blocks, the field injection and the head of every call shape
   that recurs (the five context writes and the target of a block generated from its window);
 * the choice of the attention kernel; only flash-attention 2 is exact, FlashAttention-3 and
-  ``compile`` trade bits for speed.
+  ``compile`` trade bits for speed (docs/demo.md, "Latency").
 """
 
 import functools
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -37,6 +38,10 @@ from worldcast.modeling.wan22.model import (
 from worldcast.utils.precision import generator_autocast
 
 __all__ = ["FastGenerator", "patchify_linear"]
+
+#: One capture of a CUDA graph at a time in the process (the generators of a client's cards capture
+#: the same call shapes at about the same time).
+_CAPTURES = threading.Lock()
 
 
 def patchify_linear(conv: nn.Conv3d, x: torch.Tensor) -> torch.Tensor:
@@ -146,6 +151,7 @@ class FastGenerator(CausalGeneratorAdapter):
         self._graphed_cache: KVCache | None = None
         self._seen: set[tuple] = set()
         self._pool = None
+        self._capture_stream: torch.cuda.Stream | None = None
 
     @torch.no_grad()
     def __call__(
@@ -282,13 +288,24 @@ class FastGenerator(CausalGeneratorAdapter):
     def _capture(
         self, key: tuple, plan: CallPlan, inputs: dict[str, torch.Tensor], cache: KVCache
     ) -> _Graph:
-        if self._pool is None:
-            self._pool = torch.cuda.graph_pool_handle()
-        buffers = {name: value.clone() for name, value in inputs.items()}
-        torch.cuda.synchronize()
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph, pool=self._pool, capture_error_mode="thread_local"):
-            output = self._run_blocks(cache, plan, **buffers)
+        """Capture the call shape's graph on a stream of the generator's own card, one capture of
+        the process at a time: ``torch.cuda.graph`` would capture on one stream of the process (on
+        the card that captured first) and empty every card's memory cache, which the generators of
+        a client's other cards use meanwhile (``ServingOptions.refresh_devices``)."""
+        device = self.generator.patch_embedding.weight.device
+        with _CAPTURES, torch.cuda.device(device):
+            if self._pool is None:
+                self._pool = torch.cuda.graph_pool_handle()
+                self._capture_stream = torch.cuda.Stream(device)
+            buffers = {name: value.clone() for name, value in inputs.items()}
+            torch.cuda.synchronize(device)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.stream(self._capture_stream):
+                graph.capture_begin(pool=self._pool, capture_error_mode="thread_local")
+                try:
+                    output = self._run_blocks(cache, plan, **buffers)
+                finally:
+                    graph.capture_end()
         self._graphs[key] = _Graph(graph=graph, inputs=buffers, output=output)
         self._graphed_cache = cache
         return self._graphs[key]

@@ -1,5 +1,5 @@
-"""The shared world state on a directory: publishing, the rules of a read, the step records, the
-positions and the lockstep waits."""
+"""The shared world state, on a directory and over messages: publishing, the rules of a read, the
+step records, the positions and the lockstep waits."""
 
 from pathlib import Path
 
@@ -8,17 +8,27 @@ import pytest
 
 from tests.engine.inference.support import block_key, block_latents, directory_world_state
 from worldcast.engine.inference import world_state as ws
+from worldcast.engine.inference.messages import MessageWorldState
 from worldcast.engine.inference.world_state import PublishedBlock, StepRecord, WorldState
 from worldcast.utils.fingerprints import sha256_float32
 
 
-@pytest.fixture
-def clients(tmp_path):
+@pytest.fixture(params=["directory", "messages"])
+def clients(request, tmp_path):
     """``clients(media_id)``: the world state as that client sees it, shared with the clients made
-    before it."""
+    before it, on either storage."""
+    made: dict[str, WorldState] = {}
 
     def client(media_id: str) -> WorldState:
-        return directory_world_state(tmp_path, media_id, poll_s=0.5)
+        if request.param == "directory":
+            return directory_world_state(tmp_path, media_id, poll_s=0.5)
+
+        def send(part) -> None:
+            for other in made.values():
+                other.receive(part)
+
+        made[media_id] = MessageWorldState(client=media_id, poll_s=0.5, outbox=send)
+        return made[media_id]
 
     return client
 
@@ -162,6 +172,7 @@ def test_the_world_state_loads_without_torch():
         "import sys\n"
         "import worldcast.engine.inference.world_state\n"
         "import worldcast.engine.inference.directory\n"
+        "import worldcast.engine.inference.messages\n"
         "assert 'torch' not in sys.modules\n"
     )
     repo = Path(__file__).resolve().parents[3]

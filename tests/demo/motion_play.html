@@ -1,0 +1,134 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>motion play</title>
+<link rel="stylesheet" href="static/app.css">
+<body class="is-play">
+<main id="app"></main>
+<script type="application/json" id="setup">__SETUP__</script>
+<script type="module">
+// The play view (static/play.js) as served, with a stand-in frame stream that the test drives: the welcome comes at once and a
+// frame only when harness.deliver(q) sends one (a frame of a red ramp across and a green one down, in the header of a recorded
+// frame with `q` the newest input sample it holds), so that a frame which folds an input in can be held back for as long as
+// the test wants. The page is driven from outside (test_motion_feedback.py) with a real keyboard and mouse.
+// harness.samples(since) are the input samples sent since a time (the page's performance.now()), harness.draws(since) every
+// drawing of a frame since, with the time of its animation frame (raf), the motion feedback's {zoom, shift} it was drawn with,
+// the orientation the instant turn drew it at (view: null on the 2D canvas) and the red of the canvas at 0.1 and
+// 0.9 of its width on the middle row, from which the scale of the ramp is read, harness.keys the key events with when, harness.burst(dx, dy) a mouse event that reports a
+// movement of (dx, dy) pixels, harness.errors the errors the page raised (setup.webgl false: a browser with no WebGL, which
+// draws the frames on a 2D canvas; setup.canvas2d false: one that gives no 2D context either) and harness.state() what the
+// pause panel shows.
+const setup = JSON.parse(document.getElementById('setup').textContent);
+const out = {};
+const sent = [];
+const keys = [];
+const draws = [];
+const errors = [];
+const q = (selector) => document.querySelector(selector);
+const rect = (el) => { const b = el.getBoundingClientRect(); return [b.left, b.top, b.width, b.height]; };
+const [W, H] = setup.page.frame_pixels;
+let socket = null;
+let next = 0;
+
+class Socket {
+  static OPEN = 1;
+  constructor(url) {
+    this.url = url;
+    this.readyState = 1;
+    socket = this;
+    setTimeout(() => this.onmessage({ data: JSON.stringify(setup.welcome) }), 0);
+  }
+  send(data) { sent.push({ t: performance.now(), m: JSON.parse(data) }); }
+  close() {}
+}
+
+async function ramp() {
+  const c = new OffscreenCanvas(W, H);
+  const ctx = c.getContext('2d');
+  const image = ctx.createImageData(W, H);
+  for (let y = 0; y < H; y += 1) {
+    for (let x = 0; x < W; x += 1) image.data.set([(255 * (x + 0.5)) / W, (255 * (y + 0.5)) / H, 0, 255], 4 * (y * W + x));
+  }
+  ctx.putImageData(image, 0, 0);
+  return new Uint8Array(await (await c.convertToBlob({ type: 'image/jpeg', quality: 0.95 })).arrayBuffer());
+}
+
+try {
+  for (const [key, value] of Object.entries(setup.storage || {})) localStorage.setItem(key, value);
+  window.WebSocket = Socket;
+  const getContext = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function context(type, ...options) {
+    if (/webgl/.test(type) && setup.webgl === false) return null;
+    return type === '2d' && setup.canvas2d === false ? null : getContext.call(this, type, ...options);
+  };
+  window.addEventListener('error', (e) => errors.push(String(e.message)));
+  window.addEventListener('unhandledrejection', (e) => errors.push(String(e.reason)));
+  Element.prototype.requestPointerLock = () => Promise.resolve();
+  for (const type of ['keydown', 'keyup']) {
+    window.addEventListener(type, (e) => keys.push({ type, code: e.code, t: e.timeStamp }));
+  }
+  const { page } = await import('./static/common.js');
+  Object.assign(page, setup.page);
+  const { FrameStream } = await import('./static/stream.js');
+  const scratch = document.createElement('canvas');
+  [scratch.width, scratch.height] = [W, 2];
+  const reader = getContext.call(scratch, '2d', { willReadFrequently: true });
+  let red = null;
+  // the animation frame a drawing belongs to: its time `now` is what the motion feedback was read at
+  const show = FrameStream.prototype.show;
+  FrameStream.prototype.show = function shown(now) {
+    this.rafAt = now;
+    return show.call(this, now);
+  };
+  // every drawing of a frame, with the move it was drawn with, and the canvas it left (none without a 2D context)
+  const draw = FrameStream.prototype.draw;
+  FrameStream.prototype.draw = function drawn(frame, keep = true) {
+    draw.call(this, frame, keep);
+    if (this.ctx) {
+      reader.drawImage(this.canvas, 0, H / 2 - 1, W, 2, 0, 0, W, 2);
+      const { data } = reader.getImageData(0, 0, W, 1);
+      red = [data[4 * Math.round(0.1 * W)], data[4 * Math.round(0.9 * W)]];
+    }
+    draws.push({ t: performance.now(), raf: this.rafAt, zoom: this.move.zoom, shift: this.move.shift, k: frame.header.k, q: frame.header.q, keep, red,
+      view: this.turn?.view ?? null });
+  };
+  const jpeg = await ramp();
+  sessionStorage.setItem('wc.join.room', JSON.stringify(setup.join));
+  const { renderPlay } = await import('./static/play.js');
+  renderPlay(q('#app'), 'room');
+  window.harness = {
+    out,
+    now: () => performance.now(),
+    samples: (since = 0) => sent.filter((s) => s.m.t === 'in' && s.t >= since).map((s) => ({ ...s.m, at: s.t })),
+    draws: (since = 0) => draws.filter((d) => d.t >= since),
+    keys,
+    errors,
+    // frames of the stand-in stream, in order, each holding the input samples up to `held` (and what `extra` says of its
+    // header: where it was taken, tn and cp)
+    deliver: (held, count = 1, extra = {}) => {
+      for (let i = 0; i < count; i += 1) {
+        const header = { ...setup.header, ...extra, k: next, f: next % setup.welcome.frames_per_block === 0, q: held };
+        next += 1;
+        const head = new TextEncoder().encode(JSON.stringify(header));
+        const data = new Uint8Array(4 + head.length + jpeg.length);
+        new DataView(data.buffer).setUint32(0, head.length);
+        data.set(head, 4);
+        data.set(jpeg, 4 + head.length);
+        socket.onmessage({ data: data.buffer });
+      }
+    },
+    burst: (movementX, movementY = 0) => document.dispatchEvent(new MouseEvent('mousemove', { movementX, movementY, bubbles: true })),
+    centre: (selector) => { const [x, y, width, height] = rect(q(selector)); return [x + width / 2, y + height / 2]; },
+    stored: () => localStorage.getItem('wc.motion'),
+    state: () => ({
+      card: !!q('#go') && !q('#overlay').hidden,
+      choice: [...document.querySelectorAll('input[name=motionfb]')].map((r) => [r.value, r.checked]),
+      stored: localStorage.getItem('wc.motion'),
+    }),
+    zoomOf: (red) => (0.8 * 255) / (red[1] - red[0]),
+  };
+} catch (error) {
+  out.error = `${error}`;
+}
+window.ready = true;
+</script>

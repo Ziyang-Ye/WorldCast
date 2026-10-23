@@ -1,0 +1,9 @@
+# The original Wan2.2 VAE on a second card with its decoding convolutions in the channels-last layout (docs/demo.md, "The original VAE on a
+# second card"): a latent frame decodes faster, and the pixels are not the paper's decoder's byte for byte. Merge it over
+# configs/demo/worldcast.yaml on a worker that sees two GPUs, as configs/demo/worldcast_wan_vae.yaml:
+#   CUDA_VISIBLE_DEVICES=0,1 python tools/serve_demo.py --role worker --config configs/demo/worldcast.yaml \
+#       --config configs/demo/worldcast_wan_vae_channels_last.yaml --set play.fps=15 ...
+
+client:
+  worldcast:
+    serving: {decoder: wan, decoder_device: 'cuda:1', decoder_channels_last: true}

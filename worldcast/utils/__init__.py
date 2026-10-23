@@ -1,4 +1,4 @@
-"""Numerics switches, seeding, weight files, file digests, fingerprints and lazy package exports.
+"""Numerics switches, seeding, weight files, file digests and writes, fingerprints, lazy exports.
 
 The names below are imported on first use (PEP 562).
 """
@@ -8,7 +8,7 @@ from .lazy import lazy_exports
 __getattr__, __dir__, __all__ = lazy_exports(
     __name__,
     {
-        "files": ("sha256_file",),
+        "files": ("atomic_write", "json_line", "sha256_file", "write_jsonl"),
         "fingerprints": ("fingerprint", "float32_array", "sha256_float32"),
         "lazy": ("lazy_exports",),
         "precision": (

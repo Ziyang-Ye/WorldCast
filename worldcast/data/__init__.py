@@ -20,6 +20,7 @@ __getattr__, __dir__, __all__ = lazy_exports(
             "OPENCS2_WEAPONS",
             "STATE_MODEL_CONTROL_DIM",
             "STATE_MODEL_SUBSTEPS",
+            "TICK_GATE_SECONDS",
             "align_ticks_to_ordered_substeps",
             "align_ticks_to_video_frames",
             "encode_turn",
@@ -82,7 +83,6 @@ __getattr__, __dir__, __all__ = lazy_exports(
         ),
         "stream": ("ResumableDataStream",),
         "training": (
-            "RAW_VIDEO_MAX_TICK_GAP_SECONDS",
             "BucketWindow",
             "BucketWindows",
             "RawVideoWindows",

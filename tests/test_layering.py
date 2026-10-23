@@ -1,5 +1,6 @@
-"""The dependency direction of the package: ``config, utils -> data, distributed -> modeling ->
-sampling -> player_state, scene_state -> engine, hub``. An area imports only the areas before it."""
+"""The dependency direction of the package: ``config, utils, third_party -> data, distributed ->
+modeling -> sampling -> player_state, scene_state -> hub -> engine -> demo``. An area imports only
+the areas before it."""
 
 import ast
 from pathlib import Path
@@ -9,12 +10,14 @@ import pytest
 PACKAGE = Path(__file__).resolve().parents[1] / "worldcast"
 #: The areas in dependency order; the areas of one tier do not import each other.
 TIERS = (
-    ("config", "utils"),
+    ("config", "utils", "third_party"),
     ("data", "distributed"),
     ("modeling",),
     ("sampling",),
     ("player_state", "scene_state"),
-    ("engine", "hub"),
+    ("hub",),
+    ("engine",),
+    ("demo",),
 )
 #: Area -> the areas it may import: those of the earlier tiers.
 ALLOWED = {
@@ -22,6 +25,9 @@ ALLOWED = {
     for i, tier in enumerate(TIERS)
     for area in tier
 }
+#: The builders of the training files (``tools/prepare_data.py``) are programs like the tools: the
+#: latent cache encodes with the VAE, so they may also import ``modeling``.
+PREPARATION = PACKAGE / "data" / "preparation"
 
 
 def _imported_areas(source: str, package: list[str]) -> set[str]:
@@ -55,7 +61,7 @@ def test_every_spelling_of_an_import_names_its_area():
         "from ..engine.generator import load_vae": {"engine"},
         "from . import window": {"sampling"},
         "from .window import gather_window": {"sampling"},
-        "def f():\n    from worldcast import hub": {"hub"},
+        "def f():\n    from worldcast import demo": {"demo"},
         "import torch\nfrom collections.abc import Mapping": set(),
     }
     for source, areas in spellings.items():
@@ -74,5 +80,6 @@ def test_an_area_imports_only_the_areas_before_it(area):
     assert modules
     for path in modules:
         parents = ["worldcast", *path.relative_to(PACKAGE).parts[:-1]]
-        above = _imported_areas(path.read_text(), parents) - ALLOWED[area] - {area}
+        allowed = ALLOWED[area] | ({"modeling"} if PREPARATION in path.parents else set())
+        above = _imported_areas(path.read_text(), parents) - allowed - {area}
         assert not above, f"{path.relative_to(PACKAGE)} imports {sorted(above)}"

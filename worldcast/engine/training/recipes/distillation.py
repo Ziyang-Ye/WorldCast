@@ -10,7 +10,7 @@ step::
     per micro-batch: critic_loss, backward;         clip, AdamW    # every step
     the EMA starts at the end of step ``ema.start_step``, without an update
 
-The critic is updated on every step.
+The critic is updated on every step; the paper says "the critic otherwise" (docs/training.md).
 
 **Rollout** (:meth:`DistillationTrainer.rollout`), self-forcing, without gradient on the KV cache:
 the recorded first frame is written at t = 0; each of the 10 blocks of 4 latent frames starts

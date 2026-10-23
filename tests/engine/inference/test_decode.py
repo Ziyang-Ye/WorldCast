@@ -38,6 +38,27 @@ def test_a_frame_decoder_takes_the_latents_as_they_arrive(tiny_vae):
     assert torch.allclose(torch.cat(frames), D.decode_pixels(tiny_vae, latents), atol=1e-6)
 
 
+def test_a_frame_decoder_goes_on_from_a_snapshot_as_it_did_after_it(tiny_vae):
+    """The Wan2.2 VAE's causal cache: the frames of a block's latents equal its first latents and,
+    after other latents were decoded from the same point, the rest resumed from the snapshot taken
+    there, bit for bit (a refreshed block switches at a latent so); also in the channels-last
+    layout."""
+    latents, other = _latents(5, 2, 3, seed=9)[0], _latents(4, 2, 3, seed=10)[0]
+    for channels_last in (False, True):
+        tiny_vae.set_decoder_channels_last(channels_last)
+        whole = D.WanFrameDecoder(tiny_vae)
+        reference = [whole.decode(latents[i : i + 1]) for i in range(5)]
+        for k in range(1, 5):
+            decoder = D.WanFrameDecoder(tiny_vae)
+            head = [decoder.decode(latents[i : i + 1]) for i in range(k)]
+            state = decoder.snapshot()
+            decoder.decode(other[: 5 - k])
+            decoder.restore(state)
+            tail = [decoder.decode(latents[i : i + 1]) for i in range(k, 5)]
+            assert all(torch.equal(a, b) for a, b in zip(head + tail, reference))
+    tiny_vae.set_decoder_channels_last(False)
+
+
 def test_stream_decode_pixels_rejects_bad_arguments(tiny_vae):
     stream = V.Wan22StreamingDecoder(tiny_vae)
     scale = V.latent_scale("cpu", torch.float32)

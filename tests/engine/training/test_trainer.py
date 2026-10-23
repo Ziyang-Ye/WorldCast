@@ -11,7 +11,7 @@ built from its config (CPU, FSDP on a gloo group).
   (release key layout).
 * a stage without ``checkpoint.init`` and without a resume refuses to start (no random 5B
   generator);
-* ``checkpoint.init`` reads a safetensors file of the generator's keys and the trainer's torch
+* ``checkpoint.init`` reads the released safetensors training checkpoints and the trainer's torch
   checkpoints alike, and refuses other key names;
 * each stage builds only the modules it trains, and ``metrics.jsonl`` records every step;
 * a recipe written from :class:`Trainer`'s docstring trains, and one without a hook is refused.
@@ -229,15 +229,16 @@ def test_a_stage_without_checkpoint_init_refuses_to_start(tmp_path, gloo):
 
 
 def test_checkpoint_init_reads_safetensors_and_training_checkpoints(tmp_path):
-    """A safetensors file (the generator's keys) and the trainer's torch checkpoints (the same keys
-    under the ``model.`` root) give the same generator state; other key names are refused."""
+    """The released training checkpoints (safetensors, the generator's keys) and the trainer's
+    torch checkpoints (the same keys under the ``model.`` root) give the same generator state;
+    other key names are refused."""
     from safetensors.torch import save_file
 
     cfg = paper_config("2s", {"model.dims": RUN_DIMS})
     release = write_init_checkpoint(tmp_path / "release.pt", cfg)
     state = read_generator(release)
     assert any(k.startswith("visibility_probe.") for k in state)  # kept for training
-    safetensors = tmp_path / "generator.safetensors"
+    safetensors = tmp_path / "worldcast_stage2s_bidirectional_fp32.safetensors"
     save_file({k: v.contiguous() for k, v in state.items()}, str(safetensors))
     cfg3 = paper_config("3", {"model.dims": RUN_DIMS})
     for path in (safetensors, release):

@@ -23,11 +23,13 @@ from worldcast.data.game import GRAVITY_U_PER_S2
 from worldcast.data.latents import (
     BLOCK,
     FPS,
+    VIDEO_FRAMES_PER_BLOCK,
     block_starts,
     last_video_frames,
     video_frames_of,
 )
 from worldcast.data.recordings import ALIVE_INDEX
+from worldcast.sampling.window import KEEP_LATENTS, KEEP_VIDEO, roll
 
 from .states import integrate_camera_angles, pack_substeps
 
@@ -87,35 +89,36 @@ class PhysicsPrior:
             alpha_down=float(d["alpha_down"]),
         )
 
-
-def _to_world(fru: torch.Tensor, yaw_degrees: torch.Tensor) -> torch.Tensor:
-    psi = torch.deg2rad(yaw_degrees.float())
-    cos, sin = torch.cos(psi), torch.sin(psi)
-    f, r, u = fru[..., 0], fru[..., 1], fru[..., 2]
-    return torch.stack([f * cos + r * sin, f * sin - r * cos, u], dim=-1)
+    @property
+    def top_speed(self) -> float:
+        """The fastest target speed of the table, u/s: how fast a player runs."""
+        return max(max(row) for row in self.table)
 
 
 def _movement(
-    controls: torch.Tensor, yaw: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """The movement keys per substep: the wish direction in the world ``[B, T Q, 3]`` (zero while
-    no key is held), the gait ``[B, T Q]`` (2 walk + duck), the jump key and the valid flag."""
-    batch, frames, per_frame = (int(v) for v in controls.shape[:3])
+    controls: np.ndarray, yaw: torch.Tensor
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """The movement keys per substep: the wish direction in the world ``[B, T Q, 3]`` float32 (zero
+    while no key is held), the gait ``[B, T Q]`` (2 walk + duck), the jump key and the valid flag.
+    The yaw's cosine and sine are torch's; the rest is exact in any arithmetic (the wish's length
+    is 0, 1 or the float32 square root of 2)."""
+    batch, frames, per_frame = controls.shape[:3]
     valid = controls[..., -1] > 0.5
-    move = (controls[..., list(MOVEMENT_COLUMNS)].abs() > 0.5).float()
+    move = (np.abs(controls[..., list(MOVEMENT_COLUMNS)]) > 0.5).astype(np.float32)
     forward = move[..., 0] - move[..., 1]
     strafe = move[..., 3] - move[..., 2]
-    gait_held = controls[..., list(GAIT_COLUMNS)].abs() > 0.5
-    jumped = controls[..., JUMP_COLUMN].abs() > 0.5
-    wish = torch.stack([forward, strafe], dim=-1)
-    magnitude = wish.norm(dim=-1, keepdim=True)
-    unit = wish / magnitude.clamp_min(1e-6)
-    moving = (magnitude.squeeze(-1) > 1e-6).unsqueeze(-1)
-    direction = _to_world(
-        torch.cat([unit, torch.zeros_like(unit[..., :1])], dim=-1), yaw[:, :, None]
-    )
-    direction = (direction * moving.to(direction.dtype)).reshape(batch, frames * per_frame, 3)
-    gait_index = (gait_held[..., 0].long() * 2 + gait_held[..., 1].long()).reshape(batch, -1)
+    gait_held = np.abs(controls[..., list(GAIT_COLUMNS)]) > 0.5
+    jumped = np.abs(controls[..., JUMP_COLUMN]) > 0.5
+    magnitude = np.sqrt(forward * forward + strafe * strafe)
+    moving = (magnitude > np.float32(1e-6)).astype(np.float32)
+    magnitude = np.maximum(magnitude, np.float32(1e-6))
+    f, r = forward / magnitude, strafe / magnitude
+    psi = torch.deg2rad(yaw[:, :, None].float())
+    cos, sin = torch.cos(psi).numpy(), torch.sin(psi).numpy()
+    direction = np.stack(
+        [(f * cos + r * sin) * moving, (f * sin - r * cos) * moving, np.zeros_like(f)], -1
+    ).reshape(batch, frames * per_frame, 3)
+    gait_index = (gait_held[..., 0] * 2 + gait_held[..., 1]).astype(np.int64).reshape(batch, -1)
     return direction, gait_index, jumped.reshape(batch, -1), valid.reshape(batch, -1)
 
 
@@ -139,9 +142,9 @@ class PriorState:
     def at_rest(cls, batch: int) -> "PriorState":
         """``batch`` players standing, no key held."""
         return cls(
-            torch.zeros(batch, 3),
-            torch.zeros(batch, dtype=torch.long),
-            torch.zeros(batch, dtype=torch.long),
+            torch.from_numpy(np.zeros((batch, 3), np.float32)),
+            torch.from_numpy(np.zeros(batch, np.int64)),
+            torch.from_numpy(np.zeros(batch, np.int64)),
         )
 
 
@@ -157,15 +160,14 @@ def _jump_speeds(fall: float) -> tuple[float, ...]:
 
 
 def _flights(
-    jumped: torch.Tensor, live: torch.Tensor, flight: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Where each player is airborne: ``[B, N]`` long the substeps left in the air as each valid
+    jumped: np.ndarray, live: np.ndarray, flight: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Where each player is airborne: ``[B, N]`` int64 the substeps left in the air as each valid
     substep starts (``FLIGHT_SUBSTEPS`` at a takeoff, 0 on the ground), and ``[B]`` those left
     after the last. A valid substep with jump held takes off on the ground; the flight counts
     valid substeps only."""
-    started = np.zeros(tuple(live.shape), np.int64)
-    left = flight.cpu().numpy().copy()
-    jumped, live = jumped.cpu().numpy(), live.cpu().numpy()
+    started = np.zeros(live.shape, np.int64)
+    left = np.array(flight, np.int64)
     for b in range(len(started)):
         valid = np.flatnonzero(live[b])
         takeoffs = valid[jumped[b, valid]]
@@ -180,7 +182,79 @@ def _flights(
             started[b, valid[k : k + take]] = np.arange(airborne, airborne - take, -1)
             k, airborne = k + take, airborne - take
         left[b] = airborne
-    return torch.from_numpy(started).to(flight.device), torch.from_numpy(left).to(flight.device)
+    return started, left
+
+
+#: The relaxation of the planar velocity compares the keys' speed with the velocity's (``speed >=
+#: |v|``, torch's float32 norm, within 2 units of float32 rounding, 2^-24, of the exact norm). Where
+#: a float32 estimate of ``|v|^2`` lies farther than this share from ``speed^2`` the comparison is
+#: read off it, otherwise off torch's norm itself.
+_NORM_MARGIN = 2.0**-21
+#: Keys' speeds below this (u/s, but 0) are compared on torch's norm alone: the float32 squares of
+#: velocities about as slow underflow.
+_NORM_FLOOR = 1e-15
+
+
+def _relaxed_velocity(
+    velocity: np.ndarray,
+    target: np.ndarray,
+    speed: np.ndarray,
+    relaxes: np.ndarray,
+    prior: PhysicsPrior,
+) -> np.ndarray:
+    """The planar velocity ``[B, N, 2]`` float32 after each substep: from ``velocity`` ``[B, 2]``
+    it relaxes towards ``target`` ``[B, N, 2]`` on the substeps ``relaxes`` ``[B, N]``, at
+    ``alpha_up`` while the keys' ``speed`` ``[B, N]`` (torch's norm of the target) is at least the
+    velocity's own, else at ``alpha_down``; float32 arithmetic, operation by operation."""
+    up, down = np.float32(prior.alpha_up), np.float32(prior.alpha_down)
+    speed = np.ascontiguousarray(speed.T)
+    wide = speed.astype(np.float64)
+    usable = wide >= _NORM_FLOOR
+    # a velocity whose squared estimate is at most ``below`` is surely no faster than the keys,
+    # one beyond ``above`` surely faster (at a speed of 0: any velocity but 0)
+    below = np.where(usable, (wide / (1.0 + _NORM_MARGIN)) ** 2, -1.0)
+    above = np.where(usable, (wide / (1.0 - _NORM_MARGIN)) ** 2, np.where(wide == 0, 0, np.inf))
+    every, some = relaxes.all(0), relaxes.any(0)
+    target = np.ascontiguousarray(target.transpose(1, 2, 0))  # [N, 2, B]
+    relaxes = np.ascontiguousarray(relaxes.T)
+    out = np.empty(target.shape, np.float32)
+    planar = np.array(velocity.T, np.float32)  # [2, B]
+    norms: dict[int, float] = {}  # torch's norm of a velocity, by its bits
+    for i in range(len(target)):
+        if some[i]:
+            squared = planar * planar
+            squared = squared[0] + squared[1]
+            speeding, slowing = squared <= below[i], squared > above[i]
+            step = target[i] - planar
+            if not (speeding | slowing).all():
+                # a velocity of 0 is no faster than any keys; torch's norm decides the rest where
+                # the rates move the velocity apart
+                speeding = speeding | ~planar.any(0)
+                open_ = ~(speeding | slowing)
+                if open_.any():
+                    open_ &= (
+                        (planar + up * step).view(np.int32) != (planar + down * step).view(np.int32)
+                    ).any(0)
+                if open_.any():
+                    speeding = speeding.copy()
+                    rows = np.flatnonzero(open_)
+                    speeding[rows] = speed[i, rows] >= _torch_norms(planar, rows, norms)
+            relaxed = planar + np.where(speeding, up, down) * step
+            planar = relaxed if every[i] else np.where(relaxes[i], relaxed, planar)
+        out[i] = planar
+    return out.transpose(2, 0, 1)
+
+
+def _torch_norms(planar: np.ndarray, rows: np.ndarray, norms: dict[int, float]) -> np.ndarray:
+    """Torch's float32 norm of the velocities ``planar`` ``[2, B]`` at ``rows``, each read once
+    per value (a velocity at the keys' speed stays a few units of rounding short of it, the same
+    bits substep after substep, and only torch's norm says which side of the keys' speed it is)."""
+    velocities = np.ascontiguousarray(planar.T)
+    bits = velocities.view(np.uint64)[:, 0].tolist()
+    if any(bits[row] not in norms for row in rows):
+        norm = torch.linalg.norm(torch.from_numpy(velocities), dim=-1, keepdim=True)
+        norms.update(zip(bits, norm.numpy()[:, 0].tolist()))
+    return np.array([norms[bits[row]] for row in rows], np.float32)
 
 
 @torch.no_grad()
@@ -196,7 +270,8 @@ def physics_prior_displacement(
 
     How long a movement key has been held and when a jump flies depend on the keys alone, so they
     are found for every substep at once; the velocity then relaxes towards the keys' speed
-    substep by substep.
+    substep by substep. The arithmetic is float32 on the CPU, operation by operation: numpy's, with
+    torch's cosine, sine and norms.
 
     Args:
         controls (torch.Tensor): ``[B, T, Q, A]`` packed substeps per video frame, valid flag last
@@ -208,64 +283,65 @@ def physics_prior_displacement(
 
     Returns:
         tuple[torch.Tensor, PriorState]: the displacement during each video frame ``[B, T, 3]``
-        float32, u, and the integrator after the last substep.
+        float32, u, and the integrator after the last substep (on ``controls``' device).
     """
     batch, frames, per_frame = (int(v) for v in controls.shape[:3])
     substeps = frames * per_frame
     dt = 1.0 / (FPS * per_frame)
-    direction, gait, jumped, live = _movement(controls, yaw)
-    device, dtype = direction.device, direction.dtype
+    device = controls.device
+    direction, gait, jumped, live = _movement(_host(controls), torch.from_numpy(_host(yaw)))
     state = PriorState.at_rest(batch) if state is None else state
-    velocity = state.velocity.to(device, dtype)
-    hold, flight = state.hold.to(device), state.flight.to(device)
-    table = torch.as_tensor(prior.table, dtype=dtype, device=device)
+    velocity = _host(state.velocity).astype(np.float32)
+    hold, flight = _host(state.hold), _host(state.flight)
+    table = np.asarray(prior.table, np.float32)
 
     # the speed ramp keeps running across direction changes, resets when the player stops: the
     # valid substeps with a movement key held since the last valid one without
-    wishing = direction.abs().sum(-1) > 1e-6
-    count = torch.cumsum((live & wishing).long(), dim=1)
-    since = torch.where(live & ~wishing, count, -hold[:, None].expand_as(count)).cummax(dim=1)
-    held = (count - since.values).clamp_max(int(table.shape[1]) - 1)
-    want = direction * table[gait, held].unsqueeze(-1)
-    wanted = torch.linalg.norm(want[..., :2], dim=-1, keepdim=True)
+    wishing = np.abs(direction).sum(-1) > 1e-6
+    count = np.cumsum(live & wishing, axis=1, dtype=np.int64)
+    since = np.maximum.accumulate(np.where(live & ~wishing, count, -hold[:, None]), axis=1)
+    held = np.minimum(count - since, table.shape[1] - 1)
+    want = direction * table[gait, held][..., None]
+    wanted = torch.linalg.norm(torch.from_numpy(want)[..., :2], dim=-1, keepdim=True).numpy()
 
     started, flight = _flights(jumped, live, flight)
     airborne = started > 0
-    speeds = torch.tensor(_jump_speeds(GRAVITY_U_PER_S2 * dt), dtype=dtype, device=device)
-    lifted = torch.where(
-        airborne, speeds[(FLIGHT_SUBSTEPS - started).clamp(0, FLIGHT_SUBSTEPS - 1)], 0.0
+    speeds = np.asarray(_jump_speeds(GRAVITY_U_PER_S2 * dt), np.float32)
+    lifted = np.where(
+        airborne,
+        speeds[np.clip(FLIGHT_SUBSTEPS - started, 0, FLIGHT_SUBSTEPS - 1)],
+        np.float32(0.0),
     )
-    steps = torch.arange(substeps, device=device).expand(batch, substeps)
-    newest = torch.where(live, steps, -1).cummax(dim=1).values
-    vertical = torch.where(
-        newest >= 0,
-        lifted.gather(1, newest.clamp_min(0)),
-        velocity[:, 2:3].expand(batch, substeps),
+    newest = np.maximum.accumulate(np.where(live, np.arange(substeps), -1), axis=1)
+    vertical = np.where(
+        newest >= 0, np.take_along_axis(lifted, np.maximum(newest, 0), 1), velocity[:, 2:3]
     )
 
     # on the ground the horizontal velocity relaxes towards the keys' speed, faster speeding up
-    relaxes = live & ~airborne
-    every, some = relaxes.all(0).tolist(), relaxes.any(0).tolist()
-    up, down = (
-        torch.tensor(alpha, dtype=dtype, device=device)
-        for alpha in (prior.alpha_up, prior.alpha_down)
+    horizontal = _relaxed_velocity(
+        velocity[:, :2], want[..., :2], wanted[..., 0], live & ~airborne, prior
     )
-    horizontal, planar = [], velocity[:, :2]
-    for target, speed, relaxing, all_relax, any_relax in zip(
-        want[..., :2].unbind(1), wanted.unbind(1), relaxes[..., None].unbind(1), every, some
-    ):
-        if any_relax:
-            alpha = torch.where(speed >= torch.linalg.norm(planar, dim=-1, keepdim=True), up, down)
-            relaxed = planar + alpha * (target - planar)
-            planar = relaxed if all_relax else torch.where(relaxing, relaxed, planar)
-        horizontal.append(planar)
-    velocities = torch.cat([torch.stack(horizontal, 1), vertical[..., None]], -1)
+    velocities = np.concatenate([horizontal, vertical[..., None]], -1)
 
-    during = (velocities * dt).view(batch, frames, per_frame, 3)
-    moved = torch.zeros_like(during[:, :, 0])
+    during = (velocities * np.float32(dt)).reshape(batch, frames, per_frame, 3)
+    moved = np.zeros_like(during[:, :, 0])
     for i in range(per_frame):
         moved = moved + during[:, :, i]
-    return moved, PriorState(velocities[:, -1].clone(), held[:, -1].clone(), flight)
+    after = PriorState(
+        *(_on(device, value) for value in (velocities[:, -1].copy(), held[:, -1].copy(), flight))
+    )
+    return _on(device, moved), after
+
+
+def _host(tensor: torch.Tensor) -> np.ndarray:
+    """``tensor`` as a numpy array (a view of it on the CPU)."""
+    return tensor.numpy() if tensor.device.type == "cpu" else tensor.cpu().numpy()
+
+
+def _on(device: torch.device, array: np.ndarray) -> torch.Tensor:
+    """``array`` as a tensor on ``device`` (a view of it on the CPU)."""
+    tensor = torch.from_numpy(array)
+    return tensor if device.type == "cpu" else tensor.to(device)
 
 
 @torch.no_grad()
@@ -299,12 +375,16 @@ class Motion:
         pitch (np.ndarray): ``[T]`` degrees.
         displacement (np.ndarray): ``[T, 3]`` the prior's displacement from video frame 0, u.
         start_state (np.ndarray): ``[6]`` the round-start player-state row.
+        spread (np.ndarray | None): ``[T, 3]`` an offset (u) added to the positions extrapolated to
+            a video frame, relative to its value at the video frame they start from (live play,
+            ``live.hop: spread``); None: none.
     """
 
     yaw: np.ndarray
     pitch: np.ndarray
     displacement: np.ndarray
     start_state: np.ndarray
+    spread: np.ndarray | None = None
 
 
 def player_motion(batch: Mapping[str, torch.Tensor], slot: int, *, prior: PhysicsPrior) -> Motion:
@@ -342,6 +422,9 @@ class PositionTrack:
         p0 (np.ndarray): ``[3]`` the round-start position, u.
     """
 
+    #: The arrays :meth:`slide` moves: those with a latent frame axis.
+    SLID = ("xyz",)
+
     def __init__(self, media_id: str, start_frame: int, p0: np.ndarray) -> None:
         self.media_id, self.start_frame = str(media_id), int(start_frame)
         self.xyz = np.asarray(p0, np.float64).reshape(1, 3).copy()
@@ -362,6 +445,16 @@ class PositionTrack:
         if not np.isfinite(xyz).all():
             raise ValueError(f"{self.media_id}: non-finite position")
         self.xyz = np.concatenate([self.xyz, xyz], 0)
+
+    def slide(self) -> None:
+        """Drop the positions of the block after the first :data:`KEEP_LATENTS` latent frames: the
+        round has slid by a block (:func:`~worldcast.sampling.window.slide_window_entries`) and
+        the latent frames after them moved down."""
+        for name in self.SLID:
+            values = getattr(self, name)
+            setattr(
+                self, name, np.concatenate([values[:KEEP_LATENTS], values[KEEP_LATENTS + BLOCK :]])
+            )
 
     def latest_published(self, latent_frame: int) -> int | None:
         """The newest published latent frame at or before ``latent_frame``, or None when the
@@ -398,7 +491,10 @@ def extrapolate(
     video_frames = np.asarray(video_frames, dtype=np.int64)
     starts = last_video_frames(0, len(track))[published]
     start = motion.displacement[starts]
-    return track.xyz[published] + (motion.displacement[video_frames] - start)
+    xyz = track.xyz[published] + (motion.displacement[video_frames] - start)
+    if motion.spread is None:
+        return xyz
+    return xyz + (motion.spread[video_frames] - motion.spread[starts])
 
 
 class ClientCameras:
@@ -488,6 +584,10 @@ class PredictedStateTable:
         slots (Mapping[int, tuple[PositionTrack, Motion]]): track and motion of each client's slot.
     """
 
+    #: The arrays :meth:`slide` moves: those with a video frame axis; the table itself is the round
+    #: batch's, which slides with it.
+    SLID = ("alive",)
+
     def __init__(
         self, states: torch.Tensor, slots: Mapping[int, tuple[PositionTrack, Motion]]
     ) -> None:
@@ -498,6 +598,11 @@ class PredictedStateTable:
         self._held = {
             p: np.asarray(track.xyz[0], np.float64) for p, (track, _) in self.slots.items()
         }
+
+    def slide(self) -> None:
+        """The round has slid by a block: move the alive flags with the table's rows."""
+        for name in self.SLID:
+            roll(getattr(self, name), 1, VIDEO_FRAMES_PER_BLOCK, KEEP_VIDEO)
 
     def track_of(self, media_id: str) -> PositionTrack | None:
         """The position track of ``media_id``, or None for a slot without one."""
@@ -522,15 +627,12 @@ class PredictedStateTable:
                 values = np.repeat(self._held[p][None], len(block), 0)
             else:
                 values = extrapolate(track, motion, np.full(len(block), published), block)
-            self.states[0, p, torch.as_tensor(block), :3] = torch.from_numpy(values).to(
-                torch.float32
-            )
+            states = self.states.numpy()
+            states[0, p, block, :3] = values
             self._held[p] = np.asarray(values[-1], np.float64)
             later = np.flatnonzero(self.alive[p])
             later = later[later > frames[-1]]
             if len(later):
-                self.states[0, p, torch.as_tensor(later), :3] = torch.from_numpy(values[-1]).to(
-                    torch.float32
-                )
+                states[0, p, later, :3] = values[-1]
             touched[p] = np.concatenate([block, later])
         return touched

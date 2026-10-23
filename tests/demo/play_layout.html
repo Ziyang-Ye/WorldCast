@@ -1,0 +1,183 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>play layout</title>
+<link rel="stylesheet" href="static/app.css">
+<body class="is-play">
+<main id="app"></main>
+<script type="application/json" id="setup">__SETUP__</script>
+<script type="module">
+// The play view (static/play.js) as served, on the welcome and the frames of a recorded mock session (setup: the lobby's
+// page constants, the join, the welcome, each frame's header and JPEG, the markers the frames carry); a stand-in socket
+// plays them. The page is driven from outside (test_play_layout.py), with the mouse as a person has it: harness.report
+// says where everything is at a stage, harness.centre where to click, harness.reached whether a pointer there reaches
+// the element, harness.state what the breakdown and the pause panel are; roster(), end() and hide() are what the worker
+// and the browser do to the page (roster(n): n more players in the room, drop(): the socket closes, hide(): the tab
+// hides), key() a key press, marked() where the markers' rings are, panelStyle() the breakdown's inline place.
+const setup = JSON.parse(document.getElementById('setup').textContent);
+const out = { stages: {} };
+const sent = [];
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const q = (selector) => document.querySelector(selector);
+const rect = (el) => { const b = el.getBoundingClientRect(); return [b.left, b.top, b.width, b.height]; };
+const shown = (el) => {
+  const style = getComputedStyle(el);
+  return !el.hidden && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) > 0;
+};
+const name = (el) => `${el.tagName.toLowerCase()}${typeof el.className === 'string' && el.className ? `.${el.className}` : ''}${el.hidden ? '[hidden]' : ''}`;
+
+const bytes = (base64) => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+const binary = ([header, jpeg]) => {
+  const head = new TextEncoder().encode(JSON.stringify(header));
+  const body = bytes(jpeg);
+  const data = new Uint8Array(4 + head.length + body.length);
+  new DataView(data.buffer).setUint32(0, head.length);
+  data.set(head, 4);
+  data.set(body, 4 + head.length);
+  return data.buffer;
+};
+let socket = null;
+class Socket {
+  static OPEN = 1;
+  constructor(url) {
+    this.url = url;
+    this.readyState = 1;
+    socket = this;
+    setTimeout(() => {
+      this.onmessage({ data: JSON.stringify(setup.welcome) });
+      setup.frames.forEach((frame, i) => setTimeout(() => this.onmessage({ data: binary(frame) }), 66 * (i + 1)));
+    }, 0);
+  }
+  send(data) { sent.push(data); }
+  close() {}
+}
+
+// Every element of the play view that is shown over the stage's rectangle, but the stage's own, its ancestors and the
+// page's backdrop behind everything.
+function over(stage) {
+  const { left, top, right, bottom } = stage.getBoundingClientRect();
+  const skip = new Set(document.querySelectorAll('.backdrop, .backdrop *, #stage, #stage *'));
+  for (let el = stage; el; el = el.parentElement) skip.add(el);
+  return [...document.querySelectorAll('.play *')].filter((el) => !skip.has(el) && shown(el)).filter((el) => {
+    const b = el.getBoundingClientRect();
+    return b.width > 0 && b.height > 0 && b.left < right && b.right > left && b.top < bottom && b.bottom > top;
+  }).map(name);
+}
+
+// The element a mouse pointer at the middle of `el` reaches: the topmost one there.
+const reach = (el) => {
+  const [x, y, width, height] = rect(el);
+  return document.elementFromPoint(x + width / 2, y + height / 2);
+};
+
+// The markers' canvas: for each marker (setup.markers: [slot, u, v, depth] in every frame), where its ring is expected
+// and the box of the pixels drawn within 60 px of that, [left, top, right, bottom], all in CSS pixels.
+function marked() {
+  const canvas = q('#marks');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const scale = canvas.width / rect(canvas)[2];
+  return setup.markers.map(([slot, u, v]) => {
+    const [cx, cy] = [Math.round(u * canvas.width), Math.round(v * canvas.height)];
+    const box = [Infinity, Infinity, -Infinity, -Infinity];
+    const near = Math.round(60 * scale);
+    for (let y = Math.max(0, cy - near); y < Math.min(canvas.height, cy + near); y += 1) {
+      for (let x = Math.max(0, cx - near); x < Math.min(canvas.width, cx + near); x += 1) {
+        if (data[4 * (y * canvas.width + x) + 3] < 128) continue;
+        box[0] = Math.min(box[0], x); box[1] = Math.min(box[1], y); box[2] = Math.max(box[2], x); box[3] = Math.max(box[3], y);
+      }
+    }
+    return { slot, at: [cx / scale, cy / scale], box: box.map((b) => b / scale) };
+  });
+}
+
+function report(stage) {
+  const view = q('#view');
+  const marks = q('#marks');
+  const hud = {};
+  for (const selector of ['.who', '.stats', '.keys', '.weapons-card', '.flank-left', '.flank-right', '#lat-panel', '.pad'])
+    hud[selector] = q(selector) && shown(q(selector)) ? rect(q(selector)) : null;
+  // the on-screen pad of a touch device: its two halves, sticks and buttons, and what a finger does on them
+  const pad = q('.pad') ? {
+    halves: [...document.querySelectorAll('.pad-side')].map(rect),
+    sticks: [...document.querySelectorAll('.stick-base')].map(rect),
+    buttons: [...document.querySelectorAll('.pad-btn .disc')].map(rect),
+    touchAction: [q('.pad'), ...document.querySelectorAll('.stick-base, .pad-btn')].map((el) => getComputedStyle(el).touchAction),
+    pause: q('#pause') ? rect(q('#pause')) : null,
+  } : null;
+  const overlay = q('.overlay');
+  out.stages[stage] = {
+    pad,
+    viewport: [innerWidth, innerHeight, devicePixelRatio],
+    pointer: matchMedia('(pointer: coarse)').matches ? 'coarse' : 'fine',
+    stage: rect(q('#stage')),
+    native: q('#stage').classList.contains('native'),
+    view: [view.width, view.height],
+    marks: shown(marks) ? { rect: rect(marks), store: [marks.width, marks.height] } : null,
+    crosshair: shown(q('.crosshair')) ? rect(q('.crosshair')) : null,
+    inside: [...q('#stage').children].map(name),
+    over: over(q('#stage')),
+    overlay: shown(overlay) ? {
+      rect: rect(overlay), title: q('.overlay h2')?.textContent ?? null, text: q('.overlay .panel p')?.textContent ?? null,
+      links: [...document.querySelectorAll('.overlay a')].map((a) => [a.textContent, a.getAttribute('href')]),
+      legend: [...document.querySelectorAll('.overlay .legend dt')].map((dt) => [dt.textContent.trim(), dt.nextElementSibling.textContent.replace(/\s+/g, ' ').trim()]),
+      settings: !!q('.overlay .settings'),
+    } : null,
+    hud,
+    visibility: sent.filter((m) => m.includes('"vis"')).map((m) => JSON.parse(m).h),
+    text: {
+      clock: q('#clock').textContent, bar: q('.bar').textContent.replace(/\s+/g, ' ').trim(),
+      roster: q('#roster').textContent.replace(/\s+/g, ' ').trim(), alone: shown(q('#alone')) ? q('#alone').textContent : null,
+    },
+    plates: [...document.querySelectorAll('.flank .plate')].filter(shown).map((e) => [e.clientHeight, e.scrollHeight]),
+    scroll: [document.documentElement.scrollWidth, document.documentElement.scrollHeight],
+    playScroll: [q('.play').scrollWidth, q('.play').scrollHeight, q('.play').clientWidth, q('.play').clientHeight],
+  };
+}
+
+try {
+  window.WebSocket = Socket;
+  const { page } = await import('./static/common.js');
+  Object.assign(page, setup.page);
+  sessionStorage.setItem('wc.join.room', JSON.stringify(setup.join));
+  const { renderPlay } = await import('./static/play.js');
+  renderPlay(q('#app'), 'room');
+  let kept = null;
+  window.harness = {
+    out,
+    report,
+    centre: (selector) => { const [x, y, width, height] = rect(q(selector)); return [x + width / 2, y + height / 2]; },
+    reached: (selector) => !!reach(q(selector))?.closest(selector),
+    // the pause panel's Play button and slider now, and whether they are still the elements on the page
+    keep: () => { kept = [q('#go'), q('#sens')]; },
+    kept: () => !!kept && q('#go') === kept[0] && q('#sens') === kept[1],
+    state: () => ({
+      panel: q('#lat-panel') && shown(q('#lat-panel')) ? { rect: rect(q('#lat-panel')), text: q('#lat-panel').textContent } : null,
+      card: !!q('.overlay .panel') && shown(q('.overlay .panel')),
+      overlay: shown(q('.overlay')),
+      fps: Number(q('#fps').textContent),
+      clock: q('#clock').textContent,
+      stats: { reached: !!reach(q('#stats'))?.closest('#stats') },
+    }),
+    roster: (n = 1) => socket.onmessage({
+      data: JSON.stringify({ t: 'roster', roster: [...setup.welcome.roster, ...setup.guests.slice(0, n)] }),
+    }),
+    drop: () => socket.onclose({}),
+    panelStyle: () => ({
+      top: q('#lat-panel').style.top, right: q('#lat-panel').style.right, classes: q('.play').className,
+      flank: rect(q('.flank-right')), stage: rect(q('#stage')),
+    }),
+    end: () => socket.onmessage({ data: JSON.stringify({ t: 'ended', message: 'You were away.' }) }),
+    hide: () => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    },
+    marked,
+    key: (code) => document.dispatchEvent(new KeyboardEvent('keydown', { code, bubbles: true })),
+  };
+  report('starting');
+} catch (error) {
+  out.error = `${error}`;
+}
+window.ready = true;
+</script>

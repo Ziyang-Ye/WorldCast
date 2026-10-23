@@ -1,0 +1,14 @@
+# The demo on the four-step generator trained without scene state (stage 4_noscene; not the paper's client), to set
+# beside the demo of the released generator: no memory bank, the ordinary window of its training (the first frame,
+# up to 36 latent frames of recent context and the target frames). The generator is not released: train
+# configs/train/stage3_noscene.yaml and stage4_noscene.yaml first (docs/training.md). It is configs/demo/worldcast.yaml
+# with these keys over it; tools/make_noscene_generator.py --out-dir weights makes the generator's client weight file
+# and weights/noscene.yaml, which points paths.checkpoint at it:
+#   CUDA_VISIBLE_DEVICES=0 python tools/serve_demo.py --role worker --config configs/demo/worldcast_noscene.yaml ...
+# tools/bench_live.py takes it as its --demo, with weights/noscene.yaml among its --config files.
+
+inherit: worldcast.yaml
+client:
+  worldcast:
+    configs: [weights/paths.yaml, data/paths.yaml, weights/noscene.yaml]
+    overrides: {model.scene_state: false}

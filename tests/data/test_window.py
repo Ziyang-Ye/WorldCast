@@ -11,6 +11,7 @@ from torch.utils.data.dataloader import default_collate
 
 from tests.data.support import media_record, tick_table
 from tests.data.synthetic_round import CLIENT, ENEMY, TEAMMATE
+from worldcast.data.controls import encode_turn
 from worldcast.data.labels import OBSERVER_SIGNAL_KEYS
 from worldcast.data.window import (
     DataPaths,
@@ -47,6 +48,14 @@ def test_a_players_frames_sample_the_last_tick_at_each_video_frame():
     assert frames.control_substeps.shape == (33, 4, 13) and frames.control_substep_valid.all()
     assert frames.buttons.sum(0).tolist() == [33.0] + [0.0] * 10  # forward, every frame
     assert frames.weapon_ids.tolist() == [2] * 33  # the ak47
+    # the turn of each frame (the player turns 30 degrees a second: 1.875 degrees a video frame,
+    # a tick short for frame 0) is what its view controls encode
+    assert frames.turn.shape == (33, 2) and frames.turn.dtype == np.float32
+    assert frames.turn[1:, 1].tolist() == pytest.approx([1.875] * 32)
+    assert np.array_equal(
+        frames.view_deltas,
+        np.stack([encode_turn(row, SPEC.camera_encoding) for row in frames.turn]),
+    )
 
 
 def test_frames_past_the_ticks_read_as_dead():
@@ -58,6 +67,7 @@ def test_frames_past_the_ticks_read_as_dead():
     assert frames.covered == 25 and frames.states[:25, 5].all() and not frames.states[25:, 5].any()
     assert frames.states[25:, 0].tolist() == [frames.states[24, 0]] * 8  # the last tick's pose
     assert not frames.buttons[25:].any() and not frames.control_substep_valid[25:].any()
+    assert not frames.turn[25:].any()
     absent = PlayerFrames.absent(SPEC)
     assert (absent.covered, absent.team_id) == (0, 0) and not absent.states.any()
 

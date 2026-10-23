@@ -1,0 +1,242 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>play input</title>
+<link rel="stylesheet" href="static/app.css">
+<body class="is-play">
+<main id="app"></main>
+<script type="application/json" id="setup">__SETUP__</script>
+<script type="module">
+// The play view (static/play.js) as served, on the welcome and a few frames of a recorded mock session (setup: the lobby's
+// page constants, the join, the welcome, each frame's header and JPEG; storage: what localStorage holds before the page
+// runs; refresh: the display's rate in Hz, its animation frames from a timer); a stand-in socket records every message the
+// page sends. The page is driven from outside (test_play_input.py) with a real keyboard, mouse and fingers;
+// harness.samples(since) are the input samples sent since a time (the page's performance.now()) with the animation frame
+// each went out in, harness.keys the key events the page saw with when, in which animation frame and whether it took them,
+// harness.buttons the mouse button events with whether the page took them, harness.commanded() the turn the page's input has
+// turned, harness.animation(since) and harness.gaps(since) the animation frames since and the longest interval between
+// them, harness.stall(ms) a main thread that is busy, harness.pad the gamepad that navigator.getGamepads has (connect with a
+// mapping and an id, disconnect, set(axes, pressed): the gamepad's state now, polls: how often the page asked;
+// setup.gamepadApi false: a browser that has no navigator.getGamepads), harness.locks the pointer lock requests with their
+// options (lockRequests; lockPlan(answers): how the next are answered; setup.pointerLock false: a browser that has no
+// requestPointerLock), harness.toasts the notices, harness.onsets(since) the inputs the latency meter was told began (the
+// sample that carried each, when it went out and when each began), harness.state() what the page shows, harness.burst(dx, dy)
+// a mouse event that reports a movement of (dx, dy) pixels, harness.lock() a pointer lock that takes hold, and harness.cap(run)
+// a PlayerInput run alone over a display's frames.
+const setup = JSON.parse(document.getElementById('setup').textContent);
+const out = {};
+const sent = [];
+const keys = [];
+const frames = [];
+const locks = [];
+const lockPlan = [];
+const toasts = [];
+const onsets = [];
+const buttons = [];
+let pageInput = null;
+const q = (selector) => document.querySelector(selector);
+const rect = (el) => { const b = el.getBoundingClientRect(); return [b.left, b.top, b.width, b.height]; };
+
+const bytes = (base64) => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+const binary = ([header, jpeg]) => {
+  const head = new TextEncoder().encode(JSON.stringify(header));
+  const body = bytes(jpeg);
+  const data = new Uint8Array(4 + head.length + body.length);
+  new DataView(data.buffer).setUint32(0, head.length);
+  data.set(head, 4);
+  data.set(body, 4 + head.length);
+  return data.buffer;
+};
+class Socket {
+  static OPEN = 1;
+  constructor(url) {
+    this.url = url;
+    this.readyState = 1;
+    setTimeout(() => {
+      this.onmessage({ data: JSON.stringify(setup.welcome) });
+      setup.frames.forEach((frame, i) => setTimeout(() => this.onmessage({ data: binary(frame) }), 66 * (i + 1)));
+    }, 0);
+  }
+  send(data) { sent.push({ t: performance.now(), frame: frames.length, m: JSON.parse(data) }); }
+  close() {}
+}
+
+// A gamepad (of the browser's standard mapping, unless connect() says another mapping and id) that the page finds only once
+// connect() has been called.
+const STANDARD_ID = 'Test Pad (STANDARD GAMEPAD Vendor: 0000 Product: 0000)';
+const gamepad = {
+  id: STANDARD_ID, index: 0, mapping: 'standard', connected: true,
+  axes: [0, 0, 0, 0], buttons: Array.from({ length: 17 }, () => ({ pressed: false, value: 0 })),
+};
+let present = false;
+let polls = 0;
+const connection = (type) => Object.assign(new Event(type), { gamepad });
+
+try {
+  for (const [key, value] of Object.entries(setup.storage || {})) localStorage.setItem(key, value);
+  window.WebSocket = Socket;
+  // A display of setup.refresh Hz: the animation frames come from a timer at that rate
+  if (setup.refresh) {
+    window.requestAnimationFrame = (f) => setTimeout(() => f(performance.now()), 1000 / setup.refresh);
+    window.cancelAnimationFrame = (id) => clearTimeout(id);
+  }
+  // A pointer lock that is never really taken (the page has no focus of a person's): each request is recorded with its options
+  // and answered as the next of lockPlan says: 'grant' (the default), 'reject' (Chromium's refusal: the promise rejects and
+  // pointerlockerror fires) or 'event' (the refusal of a browser that returns no promise: the event alone).
+  if (setup.pointerLock === false) delete Element.prototype.requestPointerLock;
+  else {
+    Element.prototype.requestPointerLock = function requestPointerLock(options) {
+      locks.push({ id: this.id, options: options ?? null });
+      const answer = lockPlan.shift() ?? 'grant';
+      if (answer !== 'grant') setTimeout(() => document.dispatchEvent(new Event('pointerlockerror')));
+      if (answer === 'reject') return Promise.reject(new DOMException('The lock was refused', 'SecurityError'));
+      return answer === 'grant' ? Promise.resolve() : undefined;
+    };
+  }
+  if (setup.gamepadApi === false) delete Navigator.prototype.getGamepads;
+  else navigator.getGamepads = () => { polls += 1; return present ? [gamepad, null, null, null] : [null, null, null, null]; };
+  for (const type of ['keydown', 'keyup']) {
+    window.addEventListener(type, (e) => keys.push({ type, code: e.code, t: e.timeStamp, frame: frames.length, taken: e.defaultPrevented }));
+  }
+  for (const type of ['mousedown', 'mouseup', 'auxclick']) {
+    window.addEventListener(type, (e) => buttons.push({ type, button: e.button, taken: e.defaultPrevented }));
+  }
+  requestAnimationFrame(function watch(now) { frames.push(now); requestAnimationFrame(watch); });
+  const { LatencyMeter } = await import('./static/latency.js');
+  const meterSample = LatencyMeter.prototype.sample;
+  LatencyMeter.prototype.sample = function sample(seq, now, began) {
+    if (began.length) onsets.push({ seq, now, began: [...began] });
+    return meterSample.call(this, seq, now, began);
+  };
+  const { page } = await import('./static/common.js');
+  Object.assign(page, setup.page);
+  const { PlayerInput } = await import('./static/input.js');
+  // The turn the input turns, summed per PlayerInput (commanded), and the one of the page's (the one the welcome reaches)
+  const welcome = PlayerInput.prototype.welcome;
+  PlayerInput.prototype.welcome = function reached(m) { pageInput = this; return welcome.call(this, m); };
+  const look = PlayerInput.prototype.look;
+  PlayerInput.prototype.look = function counted(...args) {
+    const [dp, dy] = [this.dp, this.dy];
+    look.call(this, ...args);
+    this.commanded = [(this.commanded?.[0] ?? 0) + this.dp - dp, (this.commanded?.[1] ?? 0) + this.dy - dy];
+  };
+  sessionStorage.setItem('wc.join.room', JSON.stringify(setup.join));
+  const { renderPlay } = await import('./static/play.js');
+  renderPlay(q('#app'), 'room');
+  new MutationObserver(() => toasts.push(q('#toast').textContent)).observe(q('#toast'), { childList: true });
+  window.harness = {
+    out,
+    now: () => performance.now(),
+    // each sample with `step`: the seconds from the animation frame of the sample before it to the frame that sent it, over
+    // which the page integrated the turn the sample carries (a display faster than the sample rate, or a frame that came
+    // early, sends no sample at some frames: their turn goes with the next one, so a rate is a turn over this time, never
+    // over one frame's); null for a sample in the frame of the one before
+    samples: (since = 0) => {
+      let before = -1;
+      return sent.filter((s) => s.m.t === 'in').map((s) => {
+        const k = s.frame - 1;       // the animation frame it went out in (or after, when a key sent it): frames seen then
+        const step = before >= 0 && k > before ? (frames[k] - frames[before]) / 1000 : null;
+        before = Math.max(before, k);
+        return { ...s.m, at: s.t, frame: s.frame, step };
+      }).filter((s) => s.at >= since);
+    },
+    // the turn the page's input has turned ([pitch, yaw] degrees), and the animation frames since a time
+    commanded: () => pageInput.commanded ?? [0, 0],
+    animation: (since = 0) => frames.filter((t) => t >= since).length,
+    keys,
+    buttons,
+    gaps: (since) => frames.filter((t) => t >= since).reduce((gap, t, i, all) => Math.max(gap, i ? t - all[i - 1] : 0), 0),
+    stall: (ms) => { const t = performance.now(); while (performance.now() - t < ms); },
+    pad: {
+      connect: (mapping = 'standard', id = STANDARD_ID) => {
+        Object.assign(gamepad, { mapping, id });
+        present = true;
+        window.dispatchEvent(connection('gamepadconnected'));
+      },
+      disconnect: () => { present = false; window.dispatchEvent(connection('gamepaddisconnected')); },
+      set: (axes, pressed = []) => {
+        gamepad.axes = axes;
+        gamepad.buttons.forEach((button, i) => { button.pressed = pressed.includes(i); button.value = Number(button.pressed); });
+        return performance.now();
+      },
+      polls: () => polls,
+    },
+    locks: () => locks.length,
+    lockRequests: () => locks,
+    lockPlan: (...answers) => lockPlan.splice(0, lockPlan.length, ...answers),
+    burst: (movementX, movementY = 0) => document.dispatchEvent(new MouseEvent('mousemove', { movementX, movementY, bubbles: true })),
+    // A pointer lock that takes hold: the page's lock event, the lock on the stage
+    lock: () => {
+      Object.defineProperty(document, 'pointerLockElement', { configurable: true, get: () => q('#stage') });
+      document.dispatchEvent(new Event('pointerlockchange'));
+      Object.defineProperty(document, 'pointerLockElement', { configurable: true, get: () => null });
+    },
+    // A PlayerInput over `frames` frames of a display of `hz` Hz (`jitter`: ms longer and shorter by turns; `stall`: frame -> ms
+    // that frame lasts), holding the look rates (`rates`: frame -> [pitch rate, yaw rate] degrees a second from the frame on,
+    // kept within the caps) and changing buttons (`changes`: frame -> [button, down], just before the frame). The samples,
+    // each with its frame, its time (ms) and whether a change sent it; the turn commanded and asked for, and what the input
+    // still holds unsent.
+    cap: ({ hz, frames, jitter = 0, stall = {}, rates = {}, changes = {} }) => {
+      const messages = [];
+      let [frame, time, changing] = [0, 0, false];
+      const input = new PlayerInput(['a', 'b', 'c', 'd'], 0.04, (seq, began, sample) => messages.push({ frame, time, changed: changing, ...sample }));
+      welcome.call(input, setup.welcome);
+      let held = [0, 0];
+      const asked = [0, 0];
+      for (; frame < frames; frame += 1) {
+        const dt = (stall[frame] ?? 1000 / hz + (jitter && (frame % 2 ? jitter : -jitter))) / 1000;
+        time += dt * 1000;
+        if (rates[frame]) held = rates[frame];
+        if (changes[frame]) {
+          changing = true;
+          input.press(changes[frame][0], changes[frame][1], time);
+          changing = false;
+        }
+        const [pitch, yaw] = input.capped(...held);
+        input.lookAtRate(pitch, yaw, Math.min(dt, 0.25), time);
+        asked[0] += pitch * Math.min(dt, 0.25);
+        asked[1] += yaw * Math.min(dt, 0.25);
+        input.tick(Math.min(dt, 0.25));
+      }
+      return { frames, messages, commanded: input.commanded, asked, unsent: [input.dp, input.dy] };
+    },
+    onsets: (since = 0) => onsets.filter((o) => o.now >= since),
+    toasts: () => toasts,
+    centre: (selector) => { const [x, y, width, height] = rect(q(selector)); return [x + width / 2, y + height / 2]; },
+    // a stick's centre, its radius and the travel of its knob (CSS pixels)
+    stick: (name) => {
+      const [x, y, width] = rect(q(`[data-stick=${name}] .stick-base`));
+      return { x: x + width / 2, y: y + width / 2, radius: width / 2, travel: (width - rect(q(`[data-stick=${name}] .stick-knob`))[2]) / 2 };
+    },
+    stage: () => rect(q('#stage')),
+    state: () => ({
+      card: !!q('#go') && !q('#overlay').hidden,
+      unfocused: q('.play').classList.contains('unfocused'),
+      held: [...document.querySelectorAll('.cap.on')].map((cap) => cap.dataset.b ?? cap.dataset.k),
+      lit: [...document.querySelectorAll('.pad-btn.on, .stick-base.on')].map((el) => el.dataset.b ?? (el.matches('.stick-base') ? el.parentElement.dataset.stick : 'next')),
+      weapon: q('.weapon.on')?.textContent ?? null,
+      padWeapon: q('[data-next] .pad-cap')?.textContent ?? null,
+      switch: q('#mouselook')?.checked ?? null,
+      switchDisabled: q('#mouselook')?.disabled ?? null,
+      sensDisabled: q('#sens')?.disabled ?? null,
+      turn: q('#turn')?.value ?? null,
+      turnLabel: q('#turn-v')?.textContent ?? null,
+      maxTurn: q('#maxturn')?.value ?? null,
+      maxTurnLabel: q('#maxturn-v')?.textContent ?? null,
+      knob: [...document.querySelectorAll('.stick-knob')].map((el) => el.style.transform),
+      scroll: [scrollX, scrollY],
+      store: Object.fromEntries(['wc.arrowturn', 'wc.turncap', 'wc.mouselook', 'wc.sens'].map((key) => [key, localStorage.getItem(key)])),
+      // F's key cap (whether it is greyed, lit, and its title) and its line of the legend, if the pause panel shows
+      inspect: {
+        greyed: q('.cap[data-b=look_at_weapon]').classList.contains('unavailable'),
+        lit: q('.cap[data-b=look_at_weapon]').classList.contains('on'),
+        title: q('.cap[data-b=look_at_weapon]').title,
+        legend: [...document.querySelectorAll('.legend .inspect')].map((el) => [el.textContent.trim(), el.classList.contains('unavailable')]),
+      },
+    }),
+  };
+} catch (error) {
+  out.error = `${error}`;
+}
+window.ready = true;
+</script>

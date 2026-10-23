@@ -2,7 +2,7 @@
 """Score a checkpoint on the 64 validation windows (``docs/training.md``, "Evaluation").
 
     python tools/evaluate.py --config configs/train/stage2.yaml --config train_paths.yaml \\
-        --checkpoint runs/stage2/checkpoint_model_025000/model_ema.pt \\
+        --checkpoint weights/worldcast/worldcast_stage2_bidirectional_fp32.safetensors \\
         --out runs/eval/stage2.json
     torchrun --nproc_per_node 4 tools/evaluate.py ...     # the windows split over the GPUs
 

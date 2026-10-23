@@ -50,7 +50,8 @@ class Protocol:
     Attributes:
         sampler (str): ``unipc`` or ``four_step``.
         denoising_steps (int): generator calls per block (per window for a bidirectional model).
-        tf32 (bool): TF32 for fp32 CUDA matmuls while scoring.
+        tf32 (bool): TF32 for fp32 CUDA matmuls while scoring, as the reference rows of
+            docs/training.md ("Evaluation") were scored.
         window_set (str): the name of the windows.
         index_sha256 (str): sha256 of the window index file.
         selection_sha256 (str): sha256 of the selected ``[[media_id, start_frame], ...]``.

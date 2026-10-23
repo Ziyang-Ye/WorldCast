@@ -1,6 +1,6 @@
 """The config loader: YAML files merged in order, dotted ``key=value`` overrides, dataclasses.
 
-The inference and training configs both load through it. The files are merged, the overrides
+The inference, training and demo configs all load through it. The files are merged, the overrides
 are set in the merged mapping, and the dataclasses are built from the result. Loading is strict: a
 key written twice in one mapping, an unknown key and a value of the wrong type are errors, and each
 dataclass validates its own values in ``__post_init__``.
@@ -26,6 +26,7 @@ __all__ = [
     "check_at_least",
     "check_choice",
     "config_to_dict",
+    "differences",
     "load",
     "merge",
     "parse_overrides",
@@ -203,6 +204,30 @@ def config_to_dict(cfg: Any) -> dict[str, Any]:
             value = dict(value)
         out[f.name] = value
     return out
+
+
+def differences(a: Any, b: Any) -> dict[str, tuple[Any, Any]]:
+    """The settings on which two configs differ: each dotted key with its value in ``a`` and in
+    ``b`` (the keys of a mapping count as settings; a key only one has reads ``None`` in the
+    other)."""
+    left, right = _flat(a), _flat(b)
+    return {
+        key: (left.get(key), right.get(key))
+        for key in sorted({*left, *right})
+        if left.get(key) != right.get(key)
+    }
+
+
+def _flat(node: Any, prefix: str = "") -> dict[str, Any]:
+    """The settings of a config or a mapping by dotted key."""
+    if dataclasses.is_dataclass(node):
+        node = config_to_dict(node)
+    if not isinstance(node, dict):
+        return {prefix: node}
+    flat: dict[str, Any] = {}
+    for key, item in node.items():
+        flat.update(_flat(item, f"{prefix}.{key}" if prefix else str(key)))
+    return flat
 
 
 def load(

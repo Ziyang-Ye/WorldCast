@@ -2,7 +2,8 @@
 
 Only the safetensors headers are read (names and shapes), never the tensors. The files are looked
 up in ``WORLDCAST_WEIGHTS_DIR`` (default ``weights/worldcast/``, where ``tools/download_weights.py
---out-dir weights`` puts them); a test skips when its file is absent.
+--out-dir weights`` puts them; the training checkpoints come with ``--with-training-checkpoints``);
+a test skips when its file is absent.
 """
 
 import os
@@ -15,11 +16,16 @@ from safetensors import safe_open
 from worldcast import hub
 from worldcast.modeling.depth_head import DepthHead, DepthReadout
 from worldcast.modeling.state_model import StateModel, load_cell_table
+from worldcast.modeling.visibility_probe import VisibilityProbeConfig
 from worldcast.modeling.wan22.model import GeneratorConfig, WorldCastGenerator
 from worldcast.modeling.wan22.text_encoder import TEXT_DIM, TEXT_LEN
 
 REPO = Path(__file__).resolve().parents[2]
 WEIGHTS = Path(os.environ.get("WORLDCAST_WEIGHTS_DIR") or REPO / "weights" / "worldcast")
+#: The generator of the training checkpoints of stages 2s and 3: with the visibility probe.
+WITH_PROBE = GeneratorConfig(visibility_probe=VisibilityProbeConfig())
+#: The generator of the stage-2 checkpoint: without the scene-state modules.
+WITHOUT_SCENE_STATE = GeneratorConfig(ray_embedding=False, observer_signals=None)
 PROMPT_EMBEDDING = hub.WEIGHTS["prompt_embedding"]
 
 
@@ -30,6 +36,15 @@ def _state_model() -> StateModel:
 #: Release file -> the module it loads into, and its tensor count.
 FILES = {
     "worldcast_4step_bf16.safetensors": (lambda: WorldCastGenerator(GeneratorConfig()), 946),
+    "worldcast_stage3_ar_fp32.safetensors": (lambda: WorldCastGenerator(WITH_PROBE), 954),
+    "worldcast_stage2s_bidirectional_fp32.safetensors": (
+        lambda: WorldCastGenerator(WITH_PROBE),
+        954,
+    ),
+    "worldcast_stage2_bidirectional_fp32.safetensors": (
+        lambda: WorldCastGenerator(WITHOUT_SCENE_STATE),
+        930,
+    ),
     "state_model.safetensors": (_state_model, 301),
     "depth_head.safetensors": (DepthHead, 130),
     "depth_readout.safetensors": (DepthReadout, 10),
@@ -63,4 +78,4 @@ def test_the_prompt_embedding_is_one_padded_umt5_embedding():
 
 
 def test_every_file_of_the_download_is_checked():
-    assert {*hub.WEIGHTS.values()} <= {*FILES, PROMPT_EMBEDDING}
+    assert {*hub.WEIGHTS.values(), *hub.TRAINING_CHECKPOINTS} <= {*FILES, PROMPT_EMBEDDING}

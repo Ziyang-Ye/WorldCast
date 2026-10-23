@@ -146,17 +146,19 @@ def window_conditions(
     prompt_embeds: torch.Tensor,
     device: torch.device | str,
     dtype: torch.dtype,
-    rays: Mapping[str, torch.Tensor],
+    rays: Mapping[str, torch.Tensor] | None,
+    observer_signals: bool = True,
 ) -> dict[str, Any]:
     """The generator's conditions of a window or a whole round with the observer signals and the
     ray embedding's conditions ``rays``: those of :func:`window_inputs`, without reading the
-    batch's latents."""
+    batch's latents. A generator without scene state reads neither (``rays`` ``None``,
+    ``observer_signals`` false)."""
     conditions, _, _ = _conditions(
         batch,
         prompt_embeds=prompt_embeds,
         device=device,
         dtype=dtype,
-        observer_signals=True,
+        observer_signals=observer_signals,
         rays=rays,
     )
     return conditions

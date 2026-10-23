@@ -1,19 +1,51 @@
 """Synthetic rounds for the player-state tests: a seeded round of ten players, a round of players
-that stand where a test puts them, and the fitted physics prior."""
+that stand where a test puts them, the fitted physics prior, and a state model that reads a live
+client's own position where its keys put it."""
 
+import functools
 from pathlib import Path
 
 import numpy as np
 import torch
 
 from worldcast.data.latents import video_frame_count
+from worldcast.modeling.state_model import (
+    DISPLACEMENT_UNIT_U,
+    StateModel,
+    load_cell_table,
+    map_index,
+)
 from worldcast.player_state.extrapolation import PhysicsPrior
+from worldcast.player_state.live_position import Walkable
 
 REPO = Path(__file__).resolve().parents[2]
 PRIOR = PhysicsPrior.load(REPO / "configs" / "state_model" / "physics_prior.json")
 #: Ordered substeps per video frame, button channels, and the columns of a substep.
 SUBSTEPS, BUTTONS = 4, 11
 SUBSTEP_WIDTH = BUTTONS + 2
+
+
+def open_columns(half: int = 40) -> np.ndarray:
+    """The ``[n, 2]`` columns of ``half`` cells (256 u) around the origin in every direction."""
+    axis = np.arange(-half, half)
+    return np.stack(np.meshgrid(axis, axis), axis=-1).reshape(-1, 2)
+
+
+def open_ground(half: int = 40) -> Walkable:
+    """A walkable extent of :func:`open_columns`."""
+    return Walkable(open_columns(half))
+
+
+@functools.cache
+def map_extent(map_name: str) -> Walkable:
+    """The walkable extent of a map of the release's cell table (a small state model's place head
+    holds it)."""
+    with torch.random.fork_rng():
+        torch.manual_seed(0)
+        head = StateModel(
+            load_cell_table(REPO / "configs" / "state_model" / "cells.json"), dim=64, layers=2
+        ).place_head
+    return Walkable(head.cell_columns(map_index(map_name)))
 
 
 def _player_track(g: torch.Generator, frames: int, client: dict | None) -> dict:
@@ -138,3 +170,32 @@ def standing_round(
 def flat_depth(depth_u: float):
     """A depth function that sees a surface ``depth_u`` in front of every latent frame."""
     return lambda latents: np.full((int(latents.shape[0]), 4, 24, 42), np.log(depth_u), np.float32)
+
+
+def own_position_read(motion, latent_frames) -> tuple[np.ndarray, np.ndarray]:
+    """The state model's read of a live client's own position where its keys put it: the place
+    head at the round start plus the prior's displacement of ``motion`` (a
+    :class:`~worldcast.player_state.live.LiveMotion`) at each of ``latent_frames``, the motion
+    head the prior's step over the latent frame (units of 64 u)."""
+    prior, start = motion.prior_displacement, motion.start_state[:3]
+    frames = [int(f) for f in latent_frames]
+    place = np.stack([start + prior[4 * f] for f in frames])
+    steps = [(prior[4 * f] - prior[max(4 * f - 4, 0)]) / DISPLACEMENT_UNIT_U for f in frames]
+    return place, np.stack(steps).astype(np.float32)
+
+
+#: The columns of :func:`~worldcast.player_state.states.continuous_row_state` that tests name: yaw
+#: and time since death (the others are pitch, corpse and frozen x y z).
+YAW, TSD = 0, 3
+#: The yaw of a block written on its own is the whole round's to float32 rounding: it is taken on
+#: from the block before, a wrapped sum against one cumulative sum (measured at most 8.4e-5 degrees
+#: after 21 slides), degrees.
+YAW_TOLERANCE = 5e-4
+
+
+def same_columns(block: torch.Tensor, whole: torch.Tensor) -> None:
+    """The columns of a block written on its own against the whole round's: the yaw within
+    :data:`YAW_TOLERANCE`, every other column bit for bit."""
+    assert (block[..., YAW] - whole[..., YAW]).abs().max() < YAW_TOLERANCE
+    keep = [c for c in range(block.shape[-1]) if c != YAW]
+    assert torch.equal(block[..., keep].view(torch.int32), whole[..., keep].view(torch.int32))

@@ -6,7 +6,10 @@ the camera, gated by the client's visibility labels of the batch (:func:`visible
 the recording's GT labels, or the ones :class:`PredictedVisibility` writes from the depth head;
 :func:`field_builder` is the callable the generator takes. :class:`ClosedLoop` is one client's
 predicted states: its state model in the block loop (:class:`StateReader`), the complementary filter
-of Eq. (4) and the extrapolation within a block.
+of Eq. (4) and the extrapolation within a block. Live play (not the paper's): :class:`LiveLoop` is
+one client's player states under live controls, with its own position (:class:`GuardedPosition`,
+kept on the map's walkable extent, :class:`Walkable`) and the other live players
+(:class:`LivePeer`).
 
 The names below are imported on first use (PEP 562).
 """
@@ -25,11 +28,22 @@ __getattr__, __dir__, __all__ = lazy_exports(
             "player_state_field",
             "splat",
         ),
-        "predicted_visibility": ("PredictedVisibility", "block_depth_frames"),
+        "live": (
+            "LiveCameras",
+            "LiveExchange",
+            "LiveLoop",
+            "LiveMotion",
+            "LiveStateReader",
+            "LiveVisibility",
+        ),
+        "live_peers": ("LivePeer", "PeerBlock", "PeerRows"),
+        "live_position": ("GuardedPosition", "Walkable"),
+        "predicted_visibility": ("PredictedVisibility", "TargetGeometry", "block_depth_frames"),
         "projection": ("project_players", "project_view"),
         "states": (
             "PlayerState",
             "camera_turns",
+            "continuous_block_state",
             "continuous_row_state",
             "integrate_camera_angles",
             "latent_frame_rows",

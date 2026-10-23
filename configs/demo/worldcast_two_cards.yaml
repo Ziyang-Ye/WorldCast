@@ -1,0 +1,11 @@
+# The demo's refreshes on two cards (docs/demo.md, "Refresh on more cards"). Merge it over
+# configs/demo/worldcast.yaml on a worker that sees two GPUs: the client generates on the first and
+# keeps a replica of its generator on the second, and a refresh of the block on screen runs on a
+# card that is free, so that a new input does not wait for the refresh before it:
+#   CUDA_VISIBLE_DEVICES=0,1 python tools/serve_demo.py --role worker --config configs/demo/worldcast.yaml \
+#       --config configs/demo/worldcast_two_cards.yaml ...
+# With the Wan2.2 VAE on a card of its own, name the cards of the refreshes apart from it.
+
+client:
+  worldcast:
+    serving: {refresh_devices: ['cuda:0', 'cuda:1']}

@@ -103,6 +103,18 @@ def test_the_place_heads_lattice(model):
     ]
 
 
+def test_a_maps_cell_columns_are_its_walkable_extent(model, table):
+    """Dust2's 461 cells stand over 185 columns, from x = -2304 to 1792 u and y = -1280 to 3328 u;
+    each map's are the distinct columns of the table's cells of it."""
+    columns = model.place_head.cell_columns(map_index("de_dust2"))
+    assert columns.shape == (185, 2) and columns.dtype == np.int64
+    assert (columns.min(0) * CELL_SIZE[0]).tolist() == [-2304, -1280]
+    assert ((columns.max(0) + 1) * CELL_SIZE[0]).tolist() == [1792, 3328]
+    for m in range(4):
+        expected = np.unique(table.cell_ijk[table.cell_map == m][:, :2], axis=0)
+        assert np.array_equal(model.place_head.cell_columns(m), expected)
+
+
 def test_forward_gives_the_displacement_and_the_place_of_every_latent_frame(model, table):
     latents, controls = _window()
     with torch.no_grad():

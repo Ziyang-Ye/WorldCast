@@ -51,22 +51,10 @@ from worldcast.player_state.states import pack_substeps
 GRID_COLUMNS = 5
 #: Outline of a box, px: where the field's gate passes the player (by its GT label), elsewhere.
 BOX_WIDTH_IN_VIEW, BOX_WIDTH_HIDDEN = 3, 1
-#: The players' colours, by player slot, each standing out on a dark scene (a darker P9 is lost in
-#: a dark tunnel). A black edge (:data:`EDGE`) sets them off a bright one.
-PLAYER_COLORS = (
-    "#E67F27",
-    "#3D94E8",
-    "#3FB576",
-    "#BF5AF2",
-    "#FF375F",
-    "#64D2FF",
-    "#FFD60A",
-    "#AC8E68",
-    "#8C8AFF",
-    "#30D158",
-)
-#: Engine team ids.
-TEAMS = {2: "T", 3: "CT"}
+#: The players' colours where they are not the live demo's (``worldcast.demo.library.
+#: PLAYER_COLORS``), by player slot, so that each stands out on a dark scene: the demo's P9,
+#: #5E5CE6, is lost in a dark tunnel. A black edge (:data:`EDGE`) sets them off a bright one.
+COLOR_OVERRIDES = {8: "#8C8AFF"}
 #: The black edge of a box (a pixel each side of its outline) and of a name (``EDGE_WIDTH`` px).
 EDGE, EDGE_WIDTH = (0, 0, 0), 2
 #: Height of the text, px; a chip's height (a line of text on black) and its gap to the edge.
@@ -203,9 +191,12 @@ class Showcase:
     def __init__(self, recorded: RecordedRound) -> None:
         from PIL import Image, ImageDraw, ImageFont
 
+        from worldcast.demo.build_library import TEAMS
+        from worldcast.demo.library import PLAYER_COLORS
+
         self.recorded = recorded
         self.teams = [TEAMS.get(int(team), "") for team in recorded.team_ids]
-        self.colors = list(PLAYER_COLORS)
+        self.colors = [COLOR_OVERRIDES.get(slot, color) for slot, color in enumerate(PLAYER_COLORS)]
         self.font = ImageFont.load_default(size=FONT_SIZE)
         self.columns, self.rows = grid_layout(len(recorded.clients))
         frame_h, frame_w = FRAME_SIZE

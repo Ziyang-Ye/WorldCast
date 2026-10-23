@@ -43,6 +43,27 @@ def test_timesteps_snap_to_the_nearest_table_entry(scheduler):
     assert S.table_sigma(t[None], scheduler, torch.zeros(1, 5, 2, 3, 4)).shape == (1, 5, 1, 1, 1)
 
 
+def test_the_tables_are_converted_once_per_dtype_and_again_when_assigned_anew():
+    """The lookup converts the host's table once (a copy from pageable memory waits for the stream
+    on a GPU); its values are those of converting on every call."""
+    scheduler = S.FlowMatchScheduler()
+    t = torch.tensor([1000.0, 936.0, 832.0, 624.0, 16.0], dtype=BF16)
+    like = torch.zeros(5)
+    cpu = torch.device("cpu")
+    for dtype in (torch.float32, torch.float64):
+        first = S.table_sigma(t, scheduler, like, dtype=dtype)
+        again = S.table_sigma(t, scheduler, like, dtype=dtype)
+        assert first.dtype == dtype and torch.equal(first, again)
+        assert torch.equal(first, scheduler.sigmas.to(dtype)[S.nearest_index(t, scheduler, dtype)])
+    kept = scheduler._converted[("sigmas", cpu, torch.float64)][1]
+    assert kept.dtype == torch.float64
+    assert S._table_on(scheduler, "sigmas", cpu, torch.float64) is kept
+    scheduler.sigmas = scheduler.sigmas * 0.5
+    sigma = S.table_sigma(t, scheduler, like)
+    assert sigma[0] == 0.5
+    assert torch.equal(sigma, scheduler.sigmas.double()[S.nearest_index(t, scheduler)])
+
+
 def test_the_timesteps_of_the_denoising_steps(scheduler):
     timesteps = S.shift_denoising_steps([1000, 750, 500, 250], scheduler)
     assert timesteps.dtype == torch.float32
@@ -182,3 +203,31 @@ def test_entry_noise_is_the_requested_draw_cut_to_the_rollout():
     assert full.shape == (1, 40, *shape) and full.dtype == BF16
     assert cut.shape == (1, 28, *shape) and torch.equal(cut, full[:, :28])
     assert not torch.equal(S.entry_noise(20260918, 41, 29, shape, dtype=BF16), cut)
+
+
+def test_the_entry_noise_stream_is_the_requested_draw_block_by_block():
+    """The blocks of a rollout that has no length, drawn one at a time from one stream, are the
+    frames of the draw for any requested length (the CPU kernel fills 16 values at a time), in
+    float32 and in the generator's dtype, and the global RNG is not touched."""
+    shape = (3, 4, 6)
+    torch.manual_seed(0)
+    state = torch.get_rng_state()
+    for dtype in (torch.float32, BF16):
+        whole = S.entry_noise(20260917, 61, 61, shape, dtype=dtype)
+        stream = S.EntryNoiseStream(20260917, shape, dtype=dtype)
+        for start in range(1, 61 - 3, 4):
+            block = stream.block(start)
+            assert block.shape == (1, 4, *shape) and block.dtype == dtype
+            assert torch.equal(block, whole[:, start - 1 : start + 3])
+    assert torch.equal(torch.get_rng_state(), state)
+    other = S.EntryNoiseStream(20260918, shape, dtype=BF16).block(1)
+    assert not torch.equal(other, S.entry_noise(20260917, 5, 5, shape, dtype=BF16))
+
+
+def test_the_entry_noise_stream_is_drawn_in_order_each_block_once():
+    stream = S.EntryNoiseStream(20260917, (3, 4, 6))
+    with pytest.raises(ValueError, match="the next is the block at latent frame 1, not 5"):
+        stream.block(5)
+    stream.block(1)
+    with pytest.raises(ValueError, match="the next is the block at latent frame 5, not 1"):
+        stream.block(1)

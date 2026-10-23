@@ -1,0 +1,8 @@
+# The demo of the generator trained without scene state (worldcast_noscene.yaml) with the original Wan2.2 VAE on a
+# second card, channels-last (worldcast_wan_vae_channels_last.yaml): a worker that sees two GPUs.
+#   CUDA_VISIBLE_DEVICES=0,1 python tools/serve_demo.py --role worker --config configs/demo/worldcast_noscene_wan.yaml ...
+
+inherit: worldcast_noscene.yaml
+client:
+  worldcast:
+    serving: {decoder: wan, decoder_device: 'cuda:1', decoder_channels_last: true}

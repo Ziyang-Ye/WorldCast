@@ -9,7 +9,12 @@ from safetensors.torch import save_file
 
 from tests.modeling.support import randomize_
 from worldcast.data.latents import LATENT_GRID
-from worldcast.modeling.depth_head import DepthHead, DepthReadout, load_depth_predictor
+from worldcast.modeling.depth_head import (
+    DepthHead,
+    DepthPredictor,
+    DepthReadout,
+    load_depth_predictor,
+)
 
 
 def _tiny_head(seed: int = 1) -> DepthHead:
@@ -97,3 +102,20 @@ def test_predictor_loads_at_the_files_size_without_a_random_draw(tmp_path, suffi
     assert np.array_equal(predictor.log_depth(latents.to(torch.bfloat16).float().numpy()), depth)
     with pytest.raises(ValueError, match=r"\[F, 48, 24, 42\]"):
         predictor.log_depth(latents[None])
+
+
+def test_paper_numerics_clamp_to_the_far_plane_and_round_to_half():
+    """The depth agreement's log depth: clamped to [0, log 4096], then float16; inside the range
+    it is the float32 depth rounded."""
+    readout = DepthReadout(width=8)
+    torch.nn.init.zeros_(readout.net[-1].weight)
+    with torch.no_grad():  # one log depth per channel: below 0, inside, above log 4096, inside
+        readout.net[-1].bias.copy_(torch.tensor([-6.0, -0.123, 4.0, 1.5]))
+    predictor = DepthPredictor(_tiny_head(), readout)
+    latents = torch.randn(2, 48, *LATENT_GRID, generator=torch.Generator().manual_seed(6))
+    full = predictor.log_depth(latents)
+    paper = predictor.log_depth(latents, paper_numerics=True)
+    assert paper.dtype == np.float16 and paper.shape == full.shape
+    assert (paper[:, 0] == 0).all() and (paper[:, 2] == np.float16(math.log(4096.0))).all()
+    assert np.array_equal(paper[:, [1, 3]], full[:, [1, 3]].astype(np.float16))
+    assert np.array_equal(paper, torch.from_numpy(full).clamp(0.0, math.log(4096.0)).half().numpy())

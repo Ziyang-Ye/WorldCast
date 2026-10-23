@@ -1,16 +1,21 @@
 """The release's files: a file is fetched once and checked by its sha256; the weights and what the
-paths file names; the example cases and their configs."""
+paths file names; the weights of the paper's metrics from their sources and their check; the
+example cases and their configs."""
 
+import dataclasses
 import hashlib
+import io
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
 import yaml
 
 from worldcast import hub
-from worldcast.config.inference import load_config
+from worldcast.config.inference import PathsConfig, load_config
 
 REPO = Path(__file__).resolve().parents[1]
 MANIFEST = REPO / hub.EXAMPLES_MANIFEST
@@ -92,15 +97,22 @@ def test_the_config_of_a_downloaded_case_names_its_paths_and_its_length(tmp_path
 @pytest.fixture
 def stub_hub(monkeypatch):
     """The Hugging Face Hub stubbed out, and reached; records what is fetched. The WorldCast
-    repository holds the files named in ``held``. Told not to reach the Hub, a download takes the
-    copy in its local directory, as the Hub's library does (:func:`test_the_hubs_library_offline`
-    pins that)."""
+    repository holds the files named in ``held``, and the weights of a metric at a pinned revision.
+    Told not to reach the Hub, a download takes the copy in its local directory, as the Hub's
+    library does (:func:`test_the_hubs_library_offline` pins that)."""
     huggingface_hub = pytest.importorskip("huggingface_hub")
     from huggingface_hub.utils import EntryNotFoundError, LocalEntryNotFoundError
 
-    fetched, held = [], {*hub.WEIGHTS.values(), hub.REPOSITORY_CONFIG}
+    fetched, held = [], {*hub.WEIGHTS.values(), hub.REPOSITORY_CONFIG, *hub.TRAINING_CHECKPOINTS}
 
-    def hf_hub_download(repo, name, local_dir=None, local_files_only=False):
+    def hf_hub_download(
+        repo, name, local_dir=None, local_files_only=False, revision=None, repo_type=None
+    ):
+        if revision is not None:  # the weights of a metric: written as the Hub would
+            fetched.append((repo, revision, repo_type, name))
+            (Path(local_dir) / name).parent.mkdir(parents=True, exist_ok=True)
+            (Path(local_dir) / name).write_bytes(f"weights of {name}".encode())
+            return str(Path(local_dir) / name)
         if local_files_only:
             if not (Path(local_dir) / name).is_file():
                 raise LocalEntryNotFoundError(f"no local copy of {name}")
@@ -124,7 +136,7 @@ def test_the_paths_file_names_the_release_files(tmp_path, stub_hub):
     fetched, _ = stub_hub
     tables = REPO / "configs" / "state_model"
     out = tmp_path / "weights"
-    paths_file = hub.download_weights(out, tables)
+    paths_file = hub.download_weights(out, tables, taehv=False, training_checkpoints=True)
     paths = yaml.safe_load(paths_file.read_text())["paths"]
     release = out.resolve() / "worldcast"
     assert paths == {
@@ -139,20 +151,25 @@ def test_the_paths_file_names_the_release_files(tmp_path, stub_hub):
     }
     assert all(Path(paths[key]).is_file() for key in hub.CLOSED_LOOP_TABLES)
     names = [entry[1] for entry in fetched if entry[0] == hub.REPOSITORY]
-    assert names == [*hub.WEIGHTS.values(), hub.REPOSITORY_CONFIG]  # and its description
+    assert names == [*hub.WEIGHTS.values(), hub.REPOSITORY_CONFIG, *hub.TRAINING_CHECKPOINTS]
     # the Wan2.2 snapshot at the pinned revision: its config, VAE and tokenizer, not the encoder
     snapshot = ("config.json", "Wan2.2_VAE.pth", "google/umt5-xxl/*")
     revision = "921dbaf3f1674a56f47e83fb80a34bac8a8f203e"
     assert ("Wan-AI/Wan2.2-TI2V-5B", revision, snapshot) in fetched
 
 
-def test_a_file_the_repository_lacks_is_named(tmp_path, stub_hub, monkeypatch):
-    monkeypatch.setattr(hub, "WEIGHTS", {**hub.WEIGHTS, "extra": "extra.safetensors"})
+def test_a_file_the_repository_lacks_is_named_and_the_paths_file_is_kept(
+    tmp_path, stub_hub, monkeypatch
+):
+    monkeypatch.setattr(hub, "TRAINING_CHECKPOINTS", ("stage.safetensors",))
     tables, out = REPO / "configs" / "state_model", tmp_path / "weights"
-    message = "extra.safetensors is not in ZiyangYe/WorldCast on the Hugging Face Hub"
+    message = "stage.safetensors is not in ZiyangYe/WorldCast on the Hugging Face Hub"
     with pytest.raises(FileNotFoundError, match=message):
-        hub.download_weights(out, tables, wan22=False)
-    assert not (out / "paths.yaml").exists()
+        hub.download_weights(out, tables, wan22=False, taehv=False, training_checkpoints=True)
+    assert set(yaml.safe_load((out / "paths.yaml").read_text())["paths"]) == {
+        *hub.WEIGHTS,
+        *hub.CLOSED_LOOP_TABLES,
+    }
 
 
 def offline_message(*missing) -> str:
@@ -172,7 +189,7 @@ def test_without_the_hub_the_copies_in_place_are_taken(tmp_path, stub_hub, monke
         f"{snapshot}/google/umt5-xxl/*",
     ]
     with pytest.raises(ConnectionError) as offline:
-        hub.download_weights(out, tables)
+        hub.download_weights(out, tables, taehv=False)
     assert str(offline.value) == offline_message(
         *[f"{release}/{name}" for name in hub.WEIGHTS.values()], *wan22
     )
@@ -182,17 +199,39 @@ def test_without_the_hub_the_copies_in_place_are_taken(tmp_path, stub_hub, monke
     (snapshot / "google" / "umt5-xxl").mkdir(parents=True)  # a folder without its files
     (snapshot / "config.json").write_text("{}")
     with pytest.raises(ConnectionError) as offline:
-        hub.download_weights(out, tables)
+        hub.download_weights(out, tables, taehv=False)
     assert str(offline.value) == offline_message(*wan22[1:])
     (snapshot / "Wan2.2_VAE.pth").write_bytes(b"in place")
     (snapshot / "google" / "umt5-xxl" / "tokenizer.json").write_text("{}")
     with pytest.raises(ConnectionError) as offline:
-        hub.download_weights(out, tables, t5=True)
+        hub.download_weights(out, tables, t5=True, taehv=False)
     assert str(offline.value) == offline_message(f"{snapshot}/models_t5_umt5-xxl-enc-bf16.pth")
-    paths = yaml.safe_load(hub.download_weights(out, tables).read_text())["paths"]
+    paths = yaml.safe_load(hub.download_weights(out, tables, taehv=False).read_text())["paths"]
     assert paths["checkpoint"] == f"{release}/worldcast_4step_bf16.safetensors"
     assert paths["wan22_root"] == str(snapshot)
     assert fetched == []  # nothing asked of the Hub
+
+
+def test_a_tiny_decoder_that_cannot_be_fetched_is_named_after_the_paths_file(
+    tmp_path, stub_hub, monkeypatch
+):
+    def refused(url, timeout):
+        assert (url, timeout) == (hub.TAEHV_URL, 60)
+        raise urllib.error.URLError(ConnectionRefusedError(61, "Connection refused"))
+
+    monkeypatch.setattr(urllib.request, "urlopen", refused)
+    tables, out = REPO / "configs" / "state_model", tmp_path / "weights"
+    with pytest.raises(ConnectionError) as offline:
+        hub.download_weights(out, tables, wan22=False)
+    assert str(offline.value) == (
+        f"{hub.TAEHV_URL} cannot be reached (offline?): no copy of {out.resolve()}/taew2_2.pth"
+        " (the demo's tiny decoder; --skip-taehv goes without it)"
+    )
+    assert set(yaml.safe_load((out / "paths.yaml").read_text())["paths"]) == {
+        *hub.WEIGHTS,
+        *hub.CLOSED_LOOP_TABLES,
+    }
+    assert not list(out.glob("taew2_2.pth*"))
 
 
 def test_the_hubs_library_offline(tmp_path, monkeypatch):
@@ -257,3 +296,105 @@ def test_whether_the_hub_answers_is_asked_once_with_one_request(monkeypatch):
         assert hub._hub_reachable() is answers and hub._hub_reachable() is answers
     hub._hub_reachable.cache_clear()
     assert asked == [("ZiyangYe/WorldCast", 10.0)] * 5
+
+
+# ------------------------------------------------------------------------- the metrics' weights
+def test_the_metric_weights_are_the_paths_keys():
+    weights = hub.METRIC_WEIGHTS
+    assert set(weights) <= {field.name for field in dataclasses.fields(PathsConfig)}
+    assert all(len(w.sha256) == 64 for w in weights.values())
+    assert weights["gim_dkm"].repo_type == "space" and weights["loftr"].revision is None
+    assert all(len(w.revision) == 40 for k, w in weights.items() if k in ("gim_dkm", "i3d"))
+
+
+def stub_weights(monkeypatch) -> list[str]:
+    """The metric weights with the digests of what the stubbed Hub and URL serve; returns the URLs
+    asked for, as they are."""
+    content = {key: f"weights of {w.file}".encode() for key, w in hub.METRIC_WEIGHTS.items()}
+    content["loftr"] = b"loftr outdoor"
+    monkeypatch.setattr(
+        hub,
+        "METRIC_WEIGHTS",
+        {
+            key: w._replace(sha256=hashlib.sha256(content[key]).hexdigest())
+            for key, w in hub.METRIC_WEIGHTS.items()
+        },
+    )
+    asked = []
+
+    def urlopen(url, timeout):
+        asked.append(url)
+        return io.BytesIO(content["loftr"])
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    return asked
+
+
+def test_the_metric_weights_come_from_their_sources(tmp_path, stub_hub, monkeypatch):
+    fetched, _ = stub_hub
+    asked = stub_weights(monkeypatch)
+    out = tmp_path / "metrics"
+    paths = hub.download_metric_weights(out, list(hub.METRIC_WEIGHTS))
+    assert paths == {
+        "detector": str(out.resolve() / "yolo11x_cs2_player.pt"),
+        "gim_dkm": str(out.resolve() / "gim_dkm_100h.ckpt"),
+        "loftr": str(out.resolve() / "loftr_outdoor.ckpt"),
+        "i3d": str(out.resolve() / "i3d_torchscript.pt"),
+    }
+    weights = hub.METRIC_WEIGHTS
+    assert fetched == [
+        (w.source, w.revision, w.repo_type, w.file) for k, w in weights.items() if k != "loftr"
+    ]
+    assert asked == [weights["loftr"].source]
+    assert sorted(p.name for p in out.iterdir()) == sorted(Path(p).name for p in paths.values())
+    hub.download_metric_weights(out, ["i3d", "loftr"])  # in place: nothing is fetched again
+    assert len(fetched) == 3 and len(asked) == 1
+    with pytest.raises(ValueError, match="unknown metric weights"):
+        hub.download_metric_weights(out, ["vbench"])
+
+
+def test_a_metric_weight_not_on_the_hub_or_offline_is_named(tmp_path, stub_hub, monkeypatch):
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+    from huggingface_hub.utils import RepositoryNotFoundError
+
+    stub_weights(monkeypatch)
+
+    def missing(repo, name, **kwargs):
+        raise RepositoryNotFoundError(f"404: {repo}")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", missing)
+    message = "detector/yolo11x_cs2_player.pt is not in ZiyangYe/WorldCast at 7f3f1c84"
+    with pytest.raises(FileNotFoundError, match=message):
+        hub.download_metric_weights(tmp_path, ["detector"])
+    monkeypatch.setattr(hub, "_hub_reachable", lambda: False)
+    with pytest.raises(ConnectionError) as offline:
+        hub.download_metric_weights(tmp_path, ["i3d"])
+    assert str(offline.value) == offline_message(str(tmp_path.resolve() / "i3d_torchscript.pt"))
+    assert sorted(p.name for p in tmp_path.iterdir()) == []
+
+
+def test_the_paths_file_names_the_metric_weights_as_they_land(tmp_path, stub_hub, monkeypatch):
+    stub_weights(monkeypatch)
+    tables, out = REPO / "configs" / "state_model", tmp_path / "weights"
+    paths_file = hub.download_weights(out, tables, wan22=False, taehv=False, metrics=["i3d"])
+    paths = yaml.safe_load(paths_file.read_text())["paths"]
+    assert list(paths)[-1] == "i3d"
+    assert paths["i3d"] == str(out.resolve() / "metrics" / "i3d_torchscript.pt")
+    assert load_config(paths_file).paths.i3d == paths["i3d"]  # a key the config has
+    monkeypatch.setattr(hub, "_fetch_metric_weight", lambda weight, part: part.write_bytes(b"x"))
+    with pytest.raises(RuntimeError, match="sha256"):
+        hub.download_weights(out, tables, wan22=False, taehv=False, metrics=["i3d", "gim_dkm"])
+    landed = yaml.safe_load(paths_file.read_text())["paths"]
+    assert "i3d" in landed and "gim_dkm" not in landed
+
+
+def test_a_metric_weight_is_checked_by_its_sha256(tmp_path, monkeypatch):
+    path = tmp_path / "i3d_torchscript.pt"
+    path.write_bytes(b"weights of i3d_torchscript.pt")  # what stub_weights serves
+    with pytest.raises(ValueError) as other:
+        hub.check_metric_weight("i3d", path)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    expected = hub.METRIC_WEIGHTS["i3d"].sha256
+    assert str(other.value) == f"{path}: sha256 {digest} is not i3d ({expected})"
+    stub_weights(monkeypatch)
+    hub.check_metric_weight("i3d", path)

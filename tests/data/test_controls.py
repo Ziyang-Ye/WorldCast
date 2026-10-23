@@ -11,6 +11,8 @@ from worldcast.data.controls import (
     AlignmentError,
     align_ticks_to_ordered_substeps,
     align_ticks_to_video_frames,
+    button_bits,
+    buttons_from_bits,
     check_camera_encoding,
     check_weapon_ids,
     count_until,
@@ -85,6 +87,11 @@ def test_the_clients_controls_per_video_frame():
     # the turn of a frame's ticks, mu-law encoded: frame 0 has one tick, the others four
     assert controls.view_deltas[:, 1].tolist() == pytest.approx([0.05, 0.175, 0.175, 0.175, 0.175])
     assert controls.view_deltas[:, 0].tolist() == pytest.approx([0.0, -0.025, 0.0, 0.0, 0.0])
+    # the turn it encodes is kept: the float32 sum of the frame's ticks, in degrees (pitch, yaw)
+    assert controls.turn.dtype == np.float32 and controls.turn.shape == (5, 2)
+    assert np.array_equal(
+        controls.view_deltas, np.stack([encode_turn(row, "noclip") for row in controls.turn])
+    )
     # the weapon held at the frame's last tick: frame 2 owns the ticks 5 .. 8
     assert [OPENCS2_WEAPONS[i] for i in controls.weapon] == ["ak47", "ak47", "awp", "awp", "awp"]
 
@@ -190,6 +197,23 @@ def test_a_turn_is_encoded_under_the_name_of_an_encoding():
     assert encode_turn(turn, "clip").tolist() == [1.0, -1.0]
     with pytest.raises(ValueError, match="camera_encoding must be one of"):
         encode_turn(turn, "carry")
+
+
+def test_the_held_buttons_are_one_bit_each():
+    buttons = np.zeros((4, 11), np.float32)
+    buttons[1, CONTROL_BUTTONS.index("forward")] = 1.0
+    buttons[2, [CONTROL_BUTTONS.index("forward"), CONTROL_BUTTONS.index("attack")]] = 1.0
+    buttons[3] = 1.0
+    bits = button_bits(buttons)
+    assert bits.dtype == np.uint16 and bits.tolist() == [0, 1, 129, 2047]
+    unpacked = buttons_from_bits(bits)
+    assert unpacked.dtype == np.float32 and np.array_equal(unpacked, buttons)
+    # bits above the 11 buttons are not read
+    assert np.array_equal(buttons_from_bits(np.array([2047 + 2048 + 4096])), buttons[3:])
+    with pytest.raises(ValueError, match=r"buttons are \[n, 11\], got \(4, 13\)"):
+        button_bits(np.zeros((4, len(OPENCS2_BUTTONS))))
+    with pytest.raises(ValueError, match=r"bits are \[n\], got \(4, 11\)"):
+        buttons_from_bits(buttons)  # the buttons, not their bits
 
 
 def test_weapon_names_are_normalised_to_the_vocabulary():

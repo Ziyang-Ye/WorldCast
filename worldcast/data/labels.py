@@ -4,7 +4,7 @@ Visibility: ``<visibility_label_root>/<media_id>.npz`` (config ``paths.visibilit
 per source frame and three-valued: visible, occluded (valid and not visible) and unknown (not
 valid); the recording player's own row is never valid. :mod:`worldcast.player_state.visibility`
 folds them to latent frames. The file also says which players are inside the player's view frustum,
-whether their label is known or not.
+whether their label is known or not (:func:`frustum_rows`).
 
 Observer signals (flash blindness, scope zoom), per latent frame, sampled from labels of the
 recorded video: ``flashlabels/`` and ``scopelabels/`` under config
@@ -27,6 +27,7 @@ __all__ = [
     "FlashCurve",
     "ScopeCurve",
     "flash_label_path",
+    "frustum_rows",
     "load_flash_curve",
     "load_observer_signal_curves",
     "load_observer_signals",
@@ -106,6 +107,24 @@ def visibility_rows(
         label_root, media_id, source_frames, "_binary_visible", "_binary_eval_valid"
     )
     return (visible & valid).astype(np.float32), valid.astype(np.bool_)
+
+
+def frustum_rows(label_root: str | Path, media_id: str, source_frames: np.ndarray) -> np.ndarray:
+    """Which players are inside the view frustum of a recording's player at a window's video
+    frames, whether or not their visibility label is known.
+
+    A player in the frustum with an unknown label (not valid) may well be in the frame; a player
+    who is dead is in no frustum. A frame outside the recording shows nobody.
+
+    Args:
+        label_root (str | Path): holds ``<media_id>.npz``.
+        media_id (str): the recording.
+        source_frames (np.ndarray): ``[T]`` source frame of each video frame.
+
+    Returns:
+        np.ndarray: ``[P, T]`` bool.
+    """
+    return _label_frames(label_root, media_id, source_frames, "_in_frustum")[0]
 
 
 # --------------------------------------------------------------------------------- observer signals

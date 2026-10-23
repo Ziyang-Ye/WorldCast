@@ -34,14 +34,16 @@ __all__ = [
     "OPENCS2_BUTTONS",
     "OPENCS2_WEAPONS",
     "STATE_MODEL_CONTROL_DIM",
-    "STATE_MODEL_MAX_TICK_GAP_SECONDS",
     "STATE_MODEL_SUBSTEPS",
     "SUBSTEPS_PER_VIDEO_FRAME",
+    "TICK_GATE_SECONDS",
     "AlignmentError",
     "FrameControls",
     "SubstepControls",
     "align_ticks_to_ordered_substeps",
     "align_ticks_to_video_frames",
+    "button_bits",
+    "buttons_from_bits",
     "check_camera_encoding",
     "check_weapon_ids",
     "count_until",
@@ -56,6 +58,11 @@ __all__ = [
 #: A frame reads the ticks up to its own time plus this slack, seconds (the 64 Hz time base is not
 #: exact in floating point).
 FRAME_TIME_SLACK = 1e-7
+#: Largest tick gap and frame-endpoint lag, seconds, where a frame's controls need a tick within 1.5
+#: ticks of its end: the windows the training files keep (the bucket windows, and the raw-video
+#: windows of stage 1, which stage 1 also serves so) and the state model's controls. The stages from
+#: 2 on serve their windows up to :data:`worldcast.data.window.MAX_TICK_GAP_SECONDS`.
+TICK_GATE_SECONDS = 1.5 / TICK_RATE
 
 #: The OpenCS2 button enum, in its published order.
 OPENCS2_BUTTONS = (
@@ -175,10 +182,9 @@ SUBSTEPS_PER_VIDEO_FRAME = round(TICK_RATE / FPS)
 
 #: State-model controls: per latent frame 16 substeps (one per engine tick), each the 13 OpenCS2
 #: buttons, the pitch and yaw turns divided by :data:`CAMERA_DELTA_SCALE` and a valid flag. A latent
-#: frame needs a tick within 1.5 ticks of its end.
+#: frame needs a tick within :data:`TICK_GATE_SECONDS` of its end.
 STATE_MODEL_SUBSTEPS = VIDEO_FRAMES_PER_LATENT * SUBSTEPS_PER_VIDEO_FRAME
 STATE_MODEL_CONTROL_DIM = len(OPENCS2_BUTTONS) + 3
-STATE_MODEL_MAX_TICK_GAP_SECONDS = 1.5 / TICK_RATE
 
 
 def normalize_weapon_name(value: object) -> str:
@@ -235,8 +241,33 @@ def encode_turn(
 ) -> np.ndarray:
     """:func:`quantize_camera_delta` of one frame's turn ``[pitch, yaw]`` under ``camera_encoding``
     (one of :data:`CAMERA_ENCODINGS`): the one place that turns the name of an encoding into the
-    quantizer's ``clip``."""
+    quantizer's ``clip``, for the recorded controls and for a live player's alike."""
     return quantize_camera_delta(turn, clip=check_camera_encoding(camera_encoding) == "clip")
+
+
+def button_bits(buttons: np.ndarray) -> np.ndarray:
+    """The held buttons of each row as one bitmask, bit ``i`` for ``CONTROL_BUTTONS[i]``.
+
+    Args:
+        buttons (np.ndarray): ``[n, 11]`` 0/1 held buttons in the order of
+            :data:`CONTROL_BUTTONS`.
+
+    Returns:
+        np.ndarray: ``[n]`` uint16.
+    """
+    held = np.asarray(buttons) > 0
+    if held.ndim != 2 or held.shape[1] != len(CONTROL_BUTTONS):
+        raise ValueError(f"buttons are [n, {len(CONTROL_BUTTONS)}], got {held.shape}")
+    return (held << np.arange(len(CONTROL_BUTTONS))).sum(axis=1).astype(np.uint16)
+
+
+def buttons_from_bits(bits: np.ndarray) -> np.ndarray:
+    """The ``[n, 11]`` float32 0/1 held buttons of the bitmasks ``bits`` ``[n]``
+    (:func:`button_bits`); bits above the 11 buttons are not read."""
+    bits = np.asarray(bits, np.int64)
+    if bits.ndim != 1:
+        raise ValueError(f"bits are [n], got {bits.shape}")
+    return ((bits[:, None] >> np.arange(len(CONTROL_BUTTONS))) & 1).astype(np.float32)
 
 
 class AlignmentError(ValueError):
@@ -251,11 +282,14 @@ class FrameControls:
         buttons (np.ndarray): ``[T, 11]`` float32 in {0, 1}, :data:`CONTROL_BUTTONS`.
         view_deltas (np.ndarray): ``[T, 2]`` float32 mu-law ``[pitch, yaw]`` turn.
         weapon (np.ndarray): ``[T]`` int64 weapon id held at the frame's last tick.
+        turn (np.ndarray): ``[T, 2]`` float32 the turn ``[pitch, yaw]`` of each frame in degrees,
+            before it is encoded: what a live player's controls carry beside the code.
     """
 
     buttons: np.ndarray
     view_deltas: np.ndarray
     weapon: np.ndarray
+    turn: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -463,7 +497,7 @@ def align_ticks_to_video_frames(
 
     if unknown:
         raise AlignmentError(f"unknown OpenCS2 buttons: {sorted(unknown)}")
-    return FrameControls(buttons=buttons, view_deltas=view_deltas, weapon=weapon_ids)
+    return FrameControls(buttons=buttons, view_deltas=view_deltas, weapon=weapon_ids, turn=turns)
 
 
 def align_ticks_to_ordered_substeps(
@@ -581,7 +615,7 @@ def state_model_controls(
         start_frame=start_frame,
         num_frames=latent_frames,
         source_fps=source_fps,
-        max_tick_gap_seconds=STATE_MODEL_MAX_TICK_GAP_SECONDS,
+        max_tick_gap_seconds=TICK_GATE_SECONDS,
         stride=SOURCE_FRAMES_PER_LATENT,
         num_substeps=STATE_MODEL_SUBSTEPS,
         buttons=OPENCS2_BUTTONS,

@@ -11,7 +11,7 @@ import torch
 from tests.data.support import RECORDING_LEVELS
 from tests.data.synthetic_round import CLIENT, TEAMMATE
 from worldcast.data import training as D
-from worldcast.data.controls import CONTROL_BUTTONS
+from worldcast.data.controls import CONTROL_BUTTONS, TICK_GATE_SECONDS
 from worldcast.data.memory_selection import BLOCK_CAUSAL, MemoryFrameSource
 from worldcast.data.window import WindowSpec
 
@@ -223,9 +223,7 @@ def _raw_video_windows(tmp_path, recording, monkeypatch, *records) -> D.RawVideo
         "input_weapon": ["weapon_ak47"] * 7 + ["weapon_awp"] * (N_TICKS - 7),
     }
     monkeypatch.setattr(D, "read_tick_columns", lambda path, names, rows: columns)
-    spec = WindowSpec(
-        2, max_tick_gap_seconds=D.RAW_VIDEO_MAX_TICK_GAP_SECONDS, camera_encoding="clip"
-    )
+    spec = WindowSpec(2, max_tick_gap_seconds=TICK_GATE_SECONDS, camera_encoding="clip")
     return D.RawVideoWindows(manifest, spec=spec, dataset_root=recording)
 
 

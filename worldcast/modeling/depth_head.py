@@ -40,6 +40,9 @@ __all__ = [
 DepthFn = Callable[[torch.Tensor | np.ndarray], np.ndarray]
 #: The read-out predicts the log depth relative to 200 u.
 _LOG_DEPTH_OFFSET = float(np.log(200.0))
+#: The largest log depth of the paper's depth agreement: the far plane
+#: (``worldcast.scene_state.geometry.FAR_U``, 4096 u).
+_PAPER_LOG_DEPTH_MAX = float(np.log(4096.0))
 
 
 class ResidualBlock(nn.Module):
@@ -146,14 +149,19 @@ class DepthPredictor:
         self.readout = readout.to(self.device).eval().requires_grad_(False)
 
     @torch.no_grad()
-    def log_depth(self, latents: torch.Tensor | np.ndarray) -> np.ndarray:
+    def log_depth(
+        self, latents: torch.Tensor | np.ndarray, *, paper_numerics: bool = False
+    ) -> np.ndarray:
         """Log axial depth of RGB latents, in float32 on :attr:`device`.
 
         Args:
             latents (Tensor | ndarray): ``[F, 48, 24, 42]`` latents, any float dtype.
+            paper_numerics (bool): clamp to ``[0, log 4096]`` and round to float16 on
+                :attr:`device`, as the paper's depth agreement computed it (App. "Scene state in
+                detail"); the scene state and the predicted visibility read the float32 depth.
 
         Returns:
-            ndarray: ``[F, 4, 24, 42]`` float32 on the CPU.
+            ndarray: ``[F, 4, 24, 42]`` float32 on the CPU; float16 with ``paper_numerics``.
         """
         x = latents if torch.is_tensor(latents) else torch.from_numpy(np.asarray(latents))
         x = x.detach().to(self.device, torch.float32)
@@ -163,7 +171,10 @@ class DepthPredictor:
                 f" {tuple(x.shape)}"
             )
         features = self.head(x[None])[0]
-        return self.readout(features.float()).float().cpu().numpy()
+        depth = self.readout(features.float()).float()
+        if paper_numerics:
+            depth = depth.clamp(0.0, _PAPER_LOG_DEPTH_MAX).half()
+        return depth.cpu().numpy()
 
 
 def load_depth_predictor(

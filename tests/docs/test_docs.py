@@ -1,6 +1,6 @@
 """The public docs against the code: every link and cited path resolves; every documented tool
 flag, config key and cited name exists; clients started by hand get a session's environment; the
-weights tables list the files of ``worldcast.hub``; the notice names what the tree holds;
+weights tables list the files of ``worldcast.hub``; the attribution files name what the tree holds;
 every shipped config loads; and the library example of docs/inference.md runs as written."""
 
 import argparse
@@ -9,11 +9,13 @@ import builtins
 import json
 import re
 import typing
+from dataclasses import asdict
 from functools import cache
 from pathlib import Path
 
 import pytest
 
+import worldcast.demo.config as demo_config
 from tests.tools.support import load_tool, synthetic_round, write_config
 from worldcast import hub
 from worldcast.config import inference, training
@@ -29,6 +31,7 @@ GUIDES = sorted(
         *(REPO / "docs").glob("*.md"),
     ]
 )
+THIRD_PARTY = REPO / "THIRD_PARTY_LICENSES.md"
 NOTICE = REPO / "NOTICE"
 CODE = sorted([*(REPO / "worldcast").rglob("*.py"), *(REPO / "tools").glob("*.py")])
 #: Every file that documents a command or a setting: the guides, the tools' docstrings, the
@@ -39,10 +42,11 @@ DOCS = [
     *sorted((REPO / "configs").rglob("*.yaml")),
     *sorted(path for path in (REPO / "examples").iterdir() if path.suffix in (".yaml", ".sh")),
 ]
-#: The settings of the inference and the training config.
+#: The settings of the inference, the training and the demo config.
 CONFIGS = (
     config_to_dict(inference.InferenceConfig()),
     config_to_dict(training.paper_config("4")),
+    asdict(demo_config.DemoConfig()),
 )
 SECTIONS = {section for config in CONFIGS for section in config}
 #: Dotted names in the docs that are files or attributes, not settings.
@@ -56,9 +60,13 @@ FILE_NAME = re.compile(r"\.(md|json|jsonl|yaml|py|js|sh|pt|pth|safetensors|npy|n
 DOWNLOADED = re.compile(
     r"examples/(expected|data/\w+/(config\.yaml|opencs2|first_latents|vislabels|obslabels))"
 )
-#: Cited names that are not the code's: two fields of the visibility labels that no code reads, and
-#: a checkpoint directory of a given step.
+#: Cited names that are not the code's: the style guide's placeholders, keys of the keyboard, an
+#: environment variable of CUDA, one of imageio-ffmpeg and one of the page tests, two fields of the
+#: visibility labels that no code reads, and a checkpoint directory of a given step.
 NOT_CODE = {
+    *("PascalCase", "UPPER_SNAKE", "snake_case", "_leading_underscore"),
+    *("Ctrl", "Esc", "Shift", "Space"),
+    *("CUDA_VISIBLE_DEVICES", "IMAGEIO_FFMPEG_EXE", "WORLDCAST_CHROME", "WORLDCAST_TURN_VIDEO"),
     *("_in_frustum", "_binary_offscreen"),
     "checkpoint_model_006000",
 }
@@ -122,9 +130,12 @@ def definitions(file: Path) -> frozenset[str]:
 
 @cache
 def known_names() -> frozenset[str]:
-    """What a guide may cite by name: what the code defines, the modules, the shipped configs and
-    example cases, the variables of the examples' scripts, and Python's own names."""
+    """What a guide may cite by name: what the code and the demo's page define, the modules, the
+    shipped configs and example cases, the variables of the examples' scripts, and Python's own
+    names."""
     names = set().union(*(definitions(file) for file in CODE)) | {file.stem for file in CODE}
+    for script in (REPO / "worldcast" / "demo" / "static").glob("*.js"):
+        names |= set(re.findall(r"[A-Za-z_]\w*", text_of(script)))
     names |= {path.stem for path in (REPO / "configs").rglob("*.*")}
     names |= set(json.loads(text_of(REPO / hub.EXAMPLES_MANIFEST))["cases"])
     for script in (REPO / "examples").glob("*.sh"):
@@ -146,7 +157,7 @@ def defined_at(dotted: str) -> bool:
 
 
 # ------------------------------------------------------------------------ links, paths and names
-@pytest.mark.parametrize("doc", [*GUIDES, NOTICE], ids=name_of)
+@pytest.mark.parametrize("doc", [*GUIDES, THIRD_PARTY], ids=name_of)
 def test_links_resolve(doc):
     prose = prose_of(doc)
     targets = re.findall(r"\[[^\]]*\]\(([^)\s]+)\)", prose) + re.findall(r'src="([^"]+)"', prose)
@@ -160,7 +171,7 @@ def test_links_resolve(doc):
             assert anchor in anchors(destination), f"{target}: no such heading"
 
 
-@pytest.mark.parametrize("doc", [*DOCS, NOTICE], ids=name_of)
+@pytest.mark.parametrize("doc", [*DOCS, THIRD_PARTY, NOTICE], ids=name_of)
 def test_cited_paths_exist(doc):
     """A path of the checkout that a doc cites is there."""
     cited = re.findall(
@@ -188,6 +199,30 @@ def test_cited_names_exist(doc):
         assert names <= known_names() | NOT_CODE, f"{cited}: no such name"
 
 
+def test_the_repo_map_names_every_module():
+    """The repo map of docs/development.md has an entry for each module and each tool."""
+    block = re.search(
+        r"```\n(.*?)```", section_of(REPO / "docs" / "development.md", "Repo map"), flags=re.S
+    )
+    entries: dict[str, str] = {}
+    parents: list[str] = []
+    for line in block.group(1).splitlines():
+        entry = re.match(r"( {0,4})(\S+(?:/|\.py))(?: {2,}(.*))?$", line)
+        if entry:
+            parents[len(entry.group(1)) // 2 :] = [entry.group(2)]
+            entries["".join(parents)] = entry.group(3) or ""
+        else:
+            entries["".join(parents)] += " " + line.strip()
+    for module in CODE:
+        if module.name == "__init__.py" or name_of(module) in entries:
+            continue
+        package = module.parent
+        while f"{name_of(package)}/" not in entries:
+            package = package.parent
+        entry = entries[f"{name_of(package)}/"]
+        assert module.stem in re.findall(r"\w+", entry), f"the repo map has no {name_of(module)}"
+
+
 def test_the_block_loop_names_the_code():
     """Each numbered step of the block loop of docs/inference.md names a function of the code."""
     section = section_of(REPO / "docs" / "inference.md", "The block loop")
@@ -196,6 +231,26 @@ def test_the_block_loop_names_the_code():
     assert len(steps) == 10
     for step in steps:
         assert step.split(".")[-1] in known_names(), f"{step}: no such function"
+
+
+def test_the_docstring_example_is_the_code():
+    section = section_of(REPO / "docs" / "development.md", "Docstrings — Google style")
+    example = re.search(r"```python\n(.*?)```", section, flags=re.S).group(1)
+    source = re.search(r"\(`(worldcast/[\w/]+\.py)`", section).group(1)
+    assert example in text_of(REPO / source)
+
+
+def test_the_paper_to_code_table_names_what_the_code_defines():
+    """The files of README's table exist and define the names the table gives them."""
+    rows = table_rows(section_of(REPO / "README.md", "From the paper to the code"))
+    assert len(rows) == 7
+    for _paper, code in rows:
+        for path, names in re.findall(r"`([\w/.]+)`((?: \((?:`\w+`(?:, )?)+\))?)", code):
+            target = REPO / "worldcast" / path
+            assert target.exists(), f"{path}: no such file"
+            files = [target] if target.is_file() else sorted(target.glob("*.py"))
+            for name in re.findall(r"\w+", names):
+                assert any(name in definitions(file) for file in files), f"{path} has no {name}"
 
 
 # ------------------------------------------------------------------------- commands and settings
@@ -285,6 +340,8 @@ def shipped_configs():
     stage4 = REPO / "configs" / "train" / "stage4.yaml"
     for path in sorted((REPO / "configs" / "train").rglob("*.yaml")):
         yield path, lambda path=path: training.load_train_config([path])
+    for path in sorted((REPO / "configs" / "demo").glob("*.yaml")):
+        yield path, lambda path=path: demo_config.load_config([path])
     paths = REPO / "examples" / "data_paths.yaml"
     yield paths, lambda: inference.load_config([paths])
     train_paths = REPO / "examples" / "train_paths.yaml"
@@ -307,32 +364,42 @@ def test_no_other_config_is_shipped():
 # ----------------------------------------------------------------------------- the release files
 def test_the_weights_tables_list_the_release_files():
     """The tables of docs/inference.md, "Weights", against ``worldcast.hub``: the files a client
-    reads with their ``paths`` keys, the pinned third-party files."""
+    reads with their ``paths`` keys, the training checkpoints, the pinned third-party files."""
     section = section_of(REPO / "docs" / "inference.md", "Weights")
     client = table_rows(section, "**What a client reads.**")
     files = {row[1].strip("`"): row[0].strip("`") for row in client}
     assert files == {f"paths.{key}": file for key, file in hub.WEIGHTS.items()}
+    training_checkpoints = table_rows(section, "**Training checkpoints**")
+    assert sorted(row[0].strip("`") for row in training_checkpoints) == sorted(
+        hub.TRAINING_CHECKPOINTS
+    )
     third_party = " ".join(
         cell for row in table_rows(section, "**Third-party files**") for cell in row
     )
-    pins = (hub.WAN22_REPO, hub.WAN22_REVISION)
+    pins = (
+        hub.WAN22_REPO,
+        hub.WAN22_REVISION,
+        hub.TAEHV_FILE,
+        hub.TAEHV_REVISION,
+        hub.TAEHV_SHA256,
+    )
     assert all(pin in third_party for pin in pins)
 
 
 @pytest.mark.parametrize("doc", DOCS, ids=name_of)
 def test_a_named_release_file_is_one(doc):
     """A weights file a doc names is a file of ``worldcast.hub``."""
-    released = set(hub.WEIGHTS.values())
+    released = {*hub.WEIGHTS.values(), *hub.TRAINING_CHECKPOINTS}
     for file in set(re.findall(r"\bworldcast_\w+\.safetensors|\b\w+\.safetensors", text_of(doc))):
         assert file in released, f"{file} is not a release file"
 
 
 # ------------------------------------------------------------------------------- the attribution
 def attributed() -> dict[str, dict[str, list[str]]]:
-    """Per project of the notice's third-party section, the names it attributes in each file of the
-    tree (a name in parentheses is the project's own)."""
+    """Per project of THIRD_PARTY_LICENSES.md, the names it attributes in each file of the tree
+    (a name in parentheses is the project's own)."""
     projects = {}
-    for section in re.split(r"^## ", text_of(NOTICE).split("## License texts")[0], flags=re.M):
+    for section in re.split(r"^## ", text_of(THIRD_PARTY).split("## License texts")[0], flags=re.M):
         title, _, body = section.partition("\n")
         items = re.findall(
             r"^  - `(worldcast/[\w/.]+\.py)`: (.*?)(?=^  - |^- |\Z)", body, flags=re.M | re.S
@@ -347,7 +414,7 @@ def attributed() -> dict[str, dict[str, list[str]]]:
 
 def test_attributed_names_are_where_the_file_says():
     projects = attributed()
-    assert len(projects) == 7
+    assert len(projects) == 9
     for project, files in projects.items():
         for path, names in files.items():
             missing = set(names) - definitions(REPO / path)
@@ -357,18 +424,20 @@ def test_attributed_names_are_where_the_file_says():
 
 
 def test_the_notice_names_the_same_files():
-    summary = text_of(NOTICE).split("# Third-party licenses")[0]
     notice = {
         paragraph.split(" (")[0]: set(re.findall(r"worldcast/[\w/.]+\.py", paragraph))
-        for paragraph in summary.split("\n\n")
+        for paragraph in text_of(NOTICE).split("\n\n")
     }
     for project, files in attributed().items():
         assert notice[project] == set(files), project
 
 
-def test_dependencies_are_listed():
+def test_shipped_fonts_and_dependencies_are_listed():
+    third_party = text_of(THIRD_PARTY)
+    fonts = sorted((REPO / "worldcast" / "demo" / "static" / "fonts").iterdir())
+    assert fonts and all(font.name in third_party for font in fonts)
     heading = "Dependencies (installed by pip, not distributed with WorldCast)"
-    listed = " ".join(section_of(NOTICE, heading).split())
+    listed = " ".join(section_of(THIRD_PARTY, heading).split())
     project = (
         text_of(REPO / "pyproject.toml").split("[project.urls]")[0].split("dependencies = [", 1)[1]
     )

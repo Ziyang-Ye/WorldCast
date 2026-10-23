@@ -1,0 +1,420 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>instant turn</title>
+<style>body { margin: 0; background: #000; } canvas { display: block; }</style>
+<body>
+<canvas id="view"></canvas>
+<script type="application/json" id="setup">__SETUP__</script>
+<script type="module">
+// The frame stream of the play view (static/stream.js) with its instant turn (static/turn.js) on a stand-in socket that
+// the test drives: harness.deliver(yaw, pitch, at) sends a frame of a known world taken at that orientation (yaw
+// counter-clockwise, pitch > 0 down, degrees) from the position `at`, harness.turnTo(pitch, yaw) sets the player's turn
+// (all of it unsent, as the input has it before a sample goes) at an animation frame, harness.draws(since) are the
+// drawings since a time with the turn asked for, the orientation the view was drawn at and the newest frame's, and
+// harness.check(...) compares the canvas with the world at an orientation.
+// The world is a sphere of colour around the eye: a hue a degree of yaw, a checker of 10-degree squares, a horizon,
+// lighter above it; every frame has a viewmodel of its own colour, green, never in the world, fixed on the frame
+// (`gun`, `glove`): a pixel of that colour outside the viewmodel is the viewmodel moved or kept in the panorama.
+// setup.world and setup.viewmodel, the URLs of an equirectangular image and of a frame-sized one with alpha, take
+// their places for a person to look at (yaw 0 at the image's left, increasing to the right, pitch -90 at its top).
+// harness.simulate(path, ...) plays a session in real time: the turn follows a path at every animation frame and the
+// frames come at the stream's rate, each taken where the turn was a latency before.
+const setup = JSON.parse(document.getElementById('setup').textContent);
+const out = {};
+const draws = [];
+const errors = [];
+const RAD = Math.PI / 180;
+const [W, H] = setup.page.frame_pixels;
+const [TH, TV] = setup.page.camera_tans;
+const GUN = [[0.72, 0.62], [0.95, 0.55], [1.0, 0.7], [1.0, 1.0], [0.62, 1.0]];
+const GLOVE = [[0.02, 0.85], [0.15, 0.8], [0.25, 1.0], [0.0, 1.0]];
+// a knife swung at a run, outside the viewmodel's pieces and below the band the panorama then takes (turn.js
+// VIEWMODEL_TOP)
+const KNIFE = [[0.33, 0.62], [0.42, 0.58], [0.48, 1.0], [0.36, 1.0]];
+const VIEWMODEL_RGB = [40, 255, 80];
+let socket = null;
+let next = 0;
+let turn = [0, 0];             // the player's turn, degrees [pitch, yaw]
+let clockOffset = 0;           // ms added to performance.now(): time passes for the panorama's frames
+
+class Socket {
+  static OPEN = 1;
+  constructor(url) {
+    this.url = url;
+    this.readyState = 1;
+    socket = this;
+    setTimeout(() => this.onmessage({ data: JSON.stringify(setup.welcome) }), 0);
+  }
+  send() {}
+  close() {}
+}
+
+// The world's colour along the world direction (x, y, z up), 0-255 each.
+function world(x, y, z) {
+  const yaw = Math.atan2(y, x) / RAD;
+  const up = Math.asin(Math.max(-1, Math.min(1, z))) / RAD;
+  const hue = ((yaw % 360) + 360) % 360;
+  const square = ((Math.floor(hue / 10) + Math.floor((up + 90) / 10)) % 2) ? 1 : 0.62;
+  const light = (up > 0 ? 0.75 : 0.45) * square * (Math.abs(up) < 0.6 ? 0.3 : 1);
+  const c = (n) => {
+    const k = (n + hue / 60) % 6;
+    return 255 * light * (1 - 0.55 * Math.max(0, Math.min(k, 4 - k, 1)));
+  };
+  return [c(5), c(3), c(1)];
+}
+
+const inside = (polygon, u, v) => {
+  let odd = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+    const [ui, vi] = polygon[i];
+    const [uj, vj] = polygon[j];
+    if ((vi > v) !== (vj > v) && u < ((uj - ui) * (v - vi)) / (vj - vi) + ui) odd = !odd;
+  }
+  return odd;
+};
+
+let worldImage = null;          // setup.world's pixels {data, width, height}
+let viewmodelImage = null;      // setup.viewmodel's pixels, a frame's size
+
+// The colour of setup.world along the world direction (x, y, z up), bilinear.
+function pictured(x, y, z) {
+  const { data, width, height } = worldImage;
+  const yaw = ((Math.atan2(y, x) / RAD) % 360 + 360) % 360;
+  const down = -Math.asin(Math.max(-1, Math.min(1, z))) / RAD;
+  const [fx, fy] = [(yaw / 360) * width - 0.5, ((down + 90) / 180) * height - 0.5];
+  const [x0, y0] = [Math.floor(fx), Math.floor(fy)];
+  const rgb = [0, 0, 0];
+  for (const [dx, dy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+    const w = (dx ? fx - x0 : 1 - fx + x0) * (dy ? fy - y0 : 1 - fy + y0);
+    const px = (((x0 + dx) % width) + width) % width;
+    const py = Math.min(height - 1, Math.max(0, y0 + dy));
+    for (let c = 0; c < 3; c += 1) rgb[c] += w * data[4 * (py * width + px) + c];
+  }
+  return rgb;
+}
+
+async function pixelsOf(url) {
+  const bitmap = await createImageBitmap(await (await fetch(url)).blob());
+  const c = new OffscreenCanvas(bitmap.width, bitmap.height);
+  c.getContext('2d').drawImage(bitmap, 0, 0);
+  return c.getContext('2d').getImageData(0, 0, bitmap.width, bitmap.height);
+}
+
+// The view of the world at yaw and pitch (degrees) as RGBA rows from the top, magnified by `magnify` about its centre,
+// with the viewmodel (`viewmodel`; `knife`: a knife swung outside its pieces).
+function render(yaw, pitch, viewmodel = true, magnify = 1, knife = false) {
+  const image = new ImageData(W, H);
+  const [cy, sy, cp, sp] = [Math.cos(yaw * RAD), Math.sin(yaw * RAD), Math.cos(pitch * RAD), Math.sin(pitch * RAD)];
+  const r = [sy, -cy, 0];
+  const u = [cy * sp, sy * sp, cp];
+  const f = [cy * cp, sy * cp, -sp];
+  for (let j = 0; j < H; j += 1) {
+    for (let i = 0; i < W; i += 1) {
+      const [a, b] = [(((2 * (i + 0.5)) / W - 1) * TH) / magnify, ((1 - (2 * (j + 0.5)) / H) * TV) / magnify];
+      const d = [0, 1, 2].map((k) => a * r[k] + b * u[k] + f[k]);
+      const n = Math.hypot(...d);
+      let rgb = (worldImage ? pictured : world)(d[0] / n, d[1] / n, d[2] / n);
+      const [pu, pv] = [(i + 0.5) / W, (j + 0.5) / H];
+      if (viewmodel && viewmodelImage) {
+        const at = 4 * (j * W + i);
+        const alpha = viewmodelImage.data[at + 3] / 255;
+        rgb = rgb.map((v, c) => (1 - alpha) * v + alpha * viewmodelImage.data[at + c]);
+      } else if (viewmodel && (inside(GUN, pu, pv) || inside(GLOVE, pu, pv) || (knife && inside(KNIFE, pu, pv)))) {
+        rgb = VIEWMODEL_RGB;
+      }
+      image.data.set([...rgb, 255], 4 * (j * W + i));
+    }
+  }
+  return image;
+}
+
+async function jpeg(image) {
+  const c = new OffscreenCanvas(W, H);
+  c.getContext('2d').putImageData(image, 0, 0);
+  return new Uint8Array(await (await c.convertToBlob({ type: 'image/jpeg', quality: 0.95 })).arrayBuffer());
+}
+
+// The canvas as RGBA rows from the top (the instant turn's read-back, rows from the bottom), with `debug`, under the
+// motion feedback's `move`.
+function canvasPixels(stream, debug = 0, move = stream.move) {
+  const rows = stream.turn.read(debug, move, performance.now());
+  const pixels = new Uint8ClampedArray(rows.length);
+  for (let j = 0; j < H; j += 1) pixels.set(rows.subarray(4 * W * (H - 1 - j), 4 * W * (H - j)), 4 * W * j);
+  return pixels;
+}
+
+// A frame of the world at yaw, pitch from `at` (engine units), its tn and cp as the worker's header has them, as the
+// socket's message; `controls`: the buttons held and the weapon of its row ({b, w}, its header's), and whether the
+// knife is swung outside the viewmodel's pieces in it (`knife`).
+async function frame(yaw, pitch, at = [0, 0, 0], controls = {}) {
+  const { knife = false, ...row } = controls;
+  return message(yaw, pitch, at, await jpeg(render(yaw, pitch, true, 1, knife)), row);
+}
+
+// The socket's message of the JPEG `body` taken at yaw, pitch from `at`, with the controls `row` ({b, w}).
+function message(yaw, pitch, at, body, row = {}) {
+  const k = next;
+  next += 1;
+  const header = {
+    k, f: k % 16 === 0, q: -1, tm: [null, 100, 1], tn: [pitch, yaw], cp: pitch, st: 'live',
+    s: [0, k / 16, ...at, yaw, pitch, 1, 0, 0, 0, null], p: [], ...row,
+  };
+  const head = new TextEncoder().encode(JSON.stringify(header));
+  const data = new Uint8Array(4 + head.length + body.length);
+  new DataView(data.buffer).setUint32(0, head.length);
+  data.set(head, 4);
+  data.set(body, 4 + head.length);
+  return { k, data: data.buffer };
+}
+
+// The socket's message of a stream's own frame: its JPEG `body` and `header`.
+function own(header, body) {
+  const head = new TextEncoder().encode(JSON.stringify(header));
+  const data = new Uint8Array(4 + head.length + body.length);
+  new DataView(data.buffer).setUint32(0, head.length);
+  data.set(head, 4);
+  data.set(body, 4 + head.length);
+  return { k: header.k, data: data.buffer };
+}
+
+const send = ({ k, data }) => {
+  socket.onmessage({ data });
+  return k;
+};
+
+try {
+  const real = performance.now.bind(performance);
+  performance.now = () => real() + clockOffset;
+  window.WebSocket = Socket;
+  window.addEventListener('error', (e) => errors.push(String(e.message)));
+  window.addEventListener('unhandledrejection', (e) => errors.push(String(e.reason)));
+  const { page } = await import('./static/common.js');
+  Object.assign(page, setup.page);
+  if (setup.world) worldImage = await pixelsOf(setup.world);
+  if (setup.viewmodel) viewmodelImage = await pixelsOf(setup.viewmodel);
+  const turnModule = await import('./static/turn.js');
+  const { FrameStream } = await import('./static/stream.js');
+  const show = FrameStream.prototype.show;
+  FrameStream.prototype.show = function shown(now) {
+    this.rafAt = now;
+    return show.call(this, now);
+  };
+  const draw = turnModule.InstantTurn.prototype.draw;
+  turnModule.InstantTurn.prototype.draw = function drawn(look, move, now) {
+    const view = draw.call(this, look, move, now);
+    draws.push({ t: performance.now(), raf: stream.rafAt, look: { ...look }, view: view && { ...view },
+      base: this.base && { yaw: this.base.yaw, pitch: this.base.pitch }, serial: this.serial, magnify: this.magnify });
+    return view;
+  };
+  const stream = new FrameStream('ws://harness', document.getElementById('view'), {
+    unsent: () => [turn[0] - stream.sent[0], turn[1] - stream.sent[1]], instant: setup.instant ?? true,
+  });
+  window.stream = stream;
+  const shownFrames = [];
+  const onFrame = stream.onFrame;
+  stream.onFrame = (header, t) => { shownFrames.push(header.k); onFrame(header, t); };
+  const captured = [];
+  let capturing = false;
+  const capture = document.createElement('canvas');
+  [capture.width, capture.height] = [W, H];
+  requestAnimationFrame(function record() {
+    requestAnimationFrame(record);
+    if (!capturing || !stream.turn?.view) return;
+    capture.getContext('2d').putImageData(new ImageData(canvasPixels(stream), W, H), 0, 0);
+    captured.push(capture.toDataURL('image/jpeg', 0.9));
+  });
+  window.harness = {
+    out,
+    errors,
+    now: () => performance.now(),
+    turnModule,
+    // a frame of the world at yaw, pitch from `at` (engine units), its tn and cp as the worker's header has them
+    deliver: async (yaw, pitch, at = [0, 0, 0], controls = {}) => send(await frame(yaw, pitch, at, controls)),
+    // A session in real time: the player's turn follows `path` ([[t (s), pitch, yaw], ...], linear between its points)
+    // at every animation frame from now for `seconds`, and the frames come `fps` a second, each taken where the turn was
+    // `latency` s before (all rendered first), or the `recorded` ones ([[JPEG base64, pitch, yaw, position], ...],
+    // each taken where it says; or [{jpeg, header, time}, ...], a stream's own frames, each sent at `time` s with its
+    // header). With `record` the canvas is recorded at every animation frame; with `sources`, every `sources`-th
+    // animation frame says where its pixels are from (harness.sources). Resolves with each animation frame's {t, turn,
+    // view, base} (its drawing's).
+    simulate: async (path, seconds, { latency = 0.3, fps = 16, record = true, recorded = null, sources = 0 } = {}) => {
+      const along = (t) => {
+        const i = path.findIndex(([at]) => at > t);
+        if (i === 0) return path[0].slice(1);
+        if (i < 0) return path[path.length - 1].slice(1);
+        const [[t0, p0, y0], [t1, p1, y1]] = [path[i - 1], path[i]];
+        const x = (t - t0) / (t1 - t0);
+        return [p0 + x * (p1 - p0), y0 + x * (y1 - y0)];
+      };
+      const frames = [];
+      const times = [];
+      const bytesOf = (base64) => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+      for (const { jpeg: jpegData, header, time } of recorded && !Array.isArray(recorded[0]) ? recorded : []) {
+        frames.push(own(header, bytesOf(jpegData)));
+        times.push(time);
+      }
+      for (let k = 0; !times.length && k * (1 / fps) < seconds; k += 1) {
+        if (recorded) {
+          const [jpegData, pitch, yaw, at = [0, 0, 0]] = recorded[Math.min(k, recorded.length - 1)];
+          frames.push(message(yaw, pitch, at, Uint8Array.from(atob(jpegData), (c) => c.charCodeAt(0))));
+          continue;
+        }
+        const [pitch, yaw] = along(Math.max(0, k / fps - latency));
+        frames.push(await frame(yaw, pitch));
+      }
+      const timeline = [];
+      return new Promise((resolve) => {
+        let start = null;
+        let sent = 0;
+        requestAnimationFrame(function step(now) {
+          start ??= now;
+          const t = (now - start) / 1000;
+          if (t > seconds) {
+            capturing = false;
+            resolve(timeline);
+            return;
+          }
+          requestAnimationFrame(step);
+          turn = along(t);
+          while (sent < frames.length && (times.length ? times[sent] : sent / fps) <= t) send(frames[sent++]);
+          capturing = record;
+          const drawn = draws[draws.length - 1];
+          const entry = { t, turn: [...turn], view: drawn?.view, base: drawn?.base };
+          if (sources && timeline.length % sources === 0 && stream.turn?.view) entry.sources = harness.sources();
+          timeline.push(entry);
+        });
+      });
+    },
+    shown: () => shownFrames[shownFrames.length - 1] ?? -1,
+    // the player's turn becomes (pitch, yaw) at the next animation frame; resolves with that frame's time
+    turnTo: (pitch, yaw) => new Promise((resolve) => requestAnimationFrame((t) => {
+      turn = [pitch, yaw];
+      resolve({ raf: t, t: performance.now() });
+    })),
+    draws: (since = 0) => draws.filter((d) => d.t >= since),
+    lastDraw: () => draws[draws.length - 1],
+    skip: (seconds) => { clockOffset += seconds * 1000; },
+    setInstant: (on) => { stream.instant = on; },
+    // the canvas against the world at (yaw, pitch): the mean absolute difference of each colour over the pixels the
+    // view draws from a frame (the newest or the panorama: `source` 'frame', 'panorama' or 'any') outside the viewmodel;
+    // the pixels of each source; the viewmodel's colour outside the viewmodel; the viewmodel kept (the pixels the
+    // display pass keeps as the newest frame's own) against the newest frame's; the newest frame's viewmodel pixels and
+    // how many of them the canvas shows as they are
+    check: (yaw, pitch, source = 'any') => {
+      const pixels = canvasPixels(stream);
+      const sources = canvasPixels(stream, 2);
+      const truth = render(yaw, pitch, false, stream.turn.magnify).data;
+      const frame = render(stream.turn.base.yaw, stream.turn.base.pitch).data;
+      let [sum, n, stray] = [0, 0, 0];
+      const counts = { frame: 0, panorama: 0, nowhere: 0, viewmodel: 0 };
+      let [still, stillN] = [0, 0];
+      let [held, kept] = [0, 0];
+      const isGreen = (a, at) => a[at] < 90 && a[at + 1] > 200 && a[at + 2] < 130;
+      for (let p = 0; p < W * H; p += 1) {
+        if (isGreen(frame, 4 * p)) {
+          held += 1;
+          if (isGreen(pixels, 4 * p)) kept += 1;
+        }
+        const [fromFrame, fromPanorama, nowhere, mask] = sources.subarray(4 * p, 4 * p + 4);
+        if (mask === 255) {
+          counts.viewmodel += 1;
+          for (let c = 0; c < 3; c += 1) still += Math.abs(pixels[4 * p + c] - frame[4 * p + c]);
+          stillN += 3;
+          continue;
+        }
+        if (fromFrame) counts.frame += 1;
+        if (fromPanorama) counts.panorama += 1;
+        if (nowhere) counts.nowhere += 1;
+        const green = pixels[4 * p] < 90 && pixels[4 * p + 1] > 200 && pixels[4 * p + 2] < 130;
+        if (green && mask === 0) stray += 1;
+        const take = mask === 0 && (source === 'any' ? fromFrame || fromPanorama
+          : source === 'frame' ? fromFrame : fromPanorama);
+        if (!take) continue;
+        for (let c = 0; c < 3; c += 1) sum += Math.abs(pixels[4 * p + c] - truth[4 * p + c]);
+        n += 3;
+      }
+      return { error: n ? sum / n : null, counts, stray, still: stillN ? still / stillN : null, held, kept };
+    },
+    // the panorama seen from (yaw, pitch) through the view's own drawing: the frame's pixels left out, as a view of
+    // that orientation would draw what only the panorama has (the viewmodel's colour anywhere in it is the viewmodel kept)
+    panoramaStray: (yaw, pitch) => {
+      const turnNow = stream.turn;
+      const saved = turnNow.view;
+      turnNow.view = { yaw, pitch };
+      const sources = canvasPixels(stream, 2);
+      const pixels = canvasPixels(stream);
+      turnNow.view = saved;
+      turnNow.drawn = '';
+      let [stray, panorama] = [0, 0];
+      for (let p = 0; p < W * H; p += 1) {
+        if (!sources[4 * p + 1] || sources[4 * p + 3]) continue;
+        panorama += 1;
+        if (pixels[4 * p] < 90 && pixels[4 * p + 1] > 200 && pixels[4 * p + 2] < 130) stray += 1;
+      }
+      return { stray, panorama };
+    },
+    // the view under the motion feedback's move {zoom, shift} against the view without it, scaled about the centre and
+    // shifted as the 2D canvas draws a frame: the mean absolute difference of each colour where the moved view shows
+    // the view's own pixels (not past its edges), and how many those are
+    moved: (zoom, shift) => {
+      const still = canvasPixels(stream, 0, { zoom: 1, shift: 0 });
+      const moved = canvasPixels(stream, 0, { zoom, shift });
+      let [sum, n] = [0, 0];
+      for (let j = 0; j < H; j += 1) {
+        for (let i = 0; i < W; i += 1) {
+          const x = Math.round(((i + 0.5) / W - 0.5 - shift) / zoom * W + W / 2 - 0.5);
+          const y = Math.round(((j + 0.5) / H - 0.5) / zoom * H + H / 2 - 0.5);
+          if (x < 2 || x >= W - 2 || y < 2 || y >= H - 2) continue;
+          for (let c = 0; c < 3; c += 1) sum += Math.abs(moved[4 * (j * W + i) + c] - still[4 * (y * W + x) + c]);
+          n += 3;
+        }
+      }
+      return { error: sum / n, pixels: n / 3 };
+    },
+    // where the canvas's pixels are from: the newest frame, the panorama, none, the viewmodel (its weight whole)
+    sources: () => {
+      const map = canvasPixels(stream, 2);
+      const counts = { frame: 0, panorama: 0, nowhere: 0, viewmodel: 0 };
+      for (let p = 0; p < W * H; p += 1) {
+        if (map[4 * p + 3] === 255) counts.viewmodel += 1;
+        else if (map[4 * p]) counts.frame += 1;
+        else if (map[4 * p + 1]) counts.panorama += 1;
+        else if (map[4 * p + 2]) counts.nowhere += 1;
+      }
+      return counts;
+    },
+    // the canvas as a JPEG (data URL), and the recording of the canvas at every animation frame
+    snapshot: () => {
+      capture.getContext('2d').putImageData(new ImageData(canvasPixels(stream), W, H), 0, 0);
+      return capture.toDataURL('image/jpeg', 0.92);
+    },
+    record: (on) => { capturing = on; },
+    recorded: () => captured.splice(0),
+    // the test of a view at (yaw, pitch): the magnification it needs (null: more than the most) and its time (ms), the
+    // mean of `repeat` runs
+    timeCovered: (yaw, pitch, repeat = 20) => {
+      const { coverage } = stream.turn;
+      const view = turnModule.rotation(yaw, pitch);
+      const oldest = coverage.oldest(performance.now());
+      const start = performance.now();
+      let need;
+      for (let i = 0; i < repeat; i += 1) need = coverage.covered(view, oldest, 1, turnModule.MAX_MAGNIFY);
+      return { ms: (performance.now() - start) / repeat, need: Number.isFinite(need) ? need : null };
+    },
+    // the time the view's turn takes to find at the turn now (ms), the mean of `repeat` runs, and what it finds
+    timeReach: (repeat = 10) => {
+      const t = stream.turn;
+      const look = stream.look(stream.last);
+      const oldest = t.coverage.oldest(performance.now());
+      const start = performance.now();
+      let reached;
+      for (let i = 0; i < repeat; i += 1) reached = t.reach(look, oldest);
+      return { ms: (performance.now() - start) / repeat, reached };
+    },
+  };
+} catch (error) {
+  out.error = `${error}\n${error.stack}`;
+}
+window.ready = true;
+</script>

@@ -55,7 +55,7 @@ class Stage:
         recipe (str): ``bidirectional`` (stages 1 and 2), ``teacher_forcing`` (stage 3) or
             ``distillation`` (stage 4).
         camera_encoding (str): the camera encoding of the controls the stage trained with:
-            ``noclip`` with scene state, ``clip`` without.
+            ``noclip`` with scene state, ``clip`` without (docs/training.md).
         latent_frames (int): latent frames of a training window.
         player_state_field (bool): the player state field; stage 1, without it, tunes Wan2.2 on
             raw video.
@@ -175,7 +175,8 @@ class DataConfig:
         train_manifest (str | None): the raw-video manifest of stage 1.
         bucket_weights (tuple[float, ...] | None): the sampling weight of each bucket file, in the
             order of :data:`worldcast.data.training.BUCKET_NAMES`; unset, the paper's
-            (:data:`worldcast.data.training.BUCKET_WEIGHTS`).
+            (:data:`worldcast.data.training.BUCKET_WEIGHTS`). ``tools/prepare_data.py buckets
+            weights`` solves them for other files.
         collision_meshes (dict[str, str]): ``{map_name: path}``, for the memory frames.
         prompt_embedding (str | None): the umT5 embedding of the fixed prompt; unset, umT5 encodes
             it.
@@ -318,13 +319,15 @@ class DistillationConfig:
 
 @dataclass(frozen=True)
 class ValidationConfig:
-    """In-training validation (docs/training.md, "Evaluation"): the eval64 windows scored with the
-    EMA weights, an ``event: validation`` row of ``metrics.jsonl``.
+    """In-training validation (docs/training.md, "Evaluation"): the 64 validation windows scored
+    with the EMA weights, an ``event: validation`` row of ``metrics.jsonl``.
 
     Attributes:
-        index (str | None): ``eval64_index.jsonl``.
+        index (str | None): the validation index, ``configs/data/validation_index.jsonl``
+            (``tools/prepare_data.py buckets validation`` writes one).
         index_sha256 (str | None): the sha256 the index must have; unset, the paper's index
-            (:data:`worldcast.engine.evaluation.protocols.UNIPC`).
+            (:data:`worldcast.engine.evaluation.protocols.UNIPC`). ``tools/prepare_data.py buckets
+            validation`` prints the sha256 of the index it writes.
         interval (int): validate every this many steps; 0 (the default) for none, 1000 in the
             paper runs.
     """

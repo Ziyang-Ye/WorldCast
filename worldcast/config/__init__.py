@@ -6,7 +6,7 @@ run. A tool adds ``--config`` / ``--set`` with ``add_config_args`` and reads the
 ``parse_overrides``.
 """
 
-from .inference import InferenceConfig, SceneStateConfig, load_config
+from .inference import InferenceConfig, LiveConfig, SceneStateConfig, load_config
 from .loader import add_config_args, build, config_to_dict, load, parse_overrides
 from .training import (
     STAGES,
@@ -20,6 +20,7 @@ __all__ = [
     "STAGES",
     "WINDOW_LATENT_FRAMES",
     "InferenceConfig",
+    "LiveConfig",
     "SceneStateConfig",
     "TrainConfig",
     "add_config_args",

@@ -110,12 +110,21 @@ class WanFrameDecoder:
 
     ``decode(latents [n, C, h, w])`` returns the chunk's pixels ``[t, 3, H, W]`` float32 in [0, 1]:
     one frame for latent 0, four for every later latent. The frames do not depend on the chunking,
-    up to the kernel choice of the convolutions.
+    up to the kernel choice of the convolutions. :meth:`snapshot` and :meth:`restore` take the video
+    back to an earlier latent (:meth:`Wan22StreamingDecoder.snapshot`).
     """
 
     def __init__(self, vae: Wan22VAE) -> None:
         self.device, self.dtype, self.scale = _placement(vae)
         self.stream = Wan22StreamingDecoder(vae)
+
+    def snapshot(self) -> Any:
+        """The video's state after the latents decoded so far."""
+        return self.stream.snapshot()
+
+    def restore(self, state: Any) -> None:
+        """Go back to a :meth:`snapshot`."""
+        self.stream.restore(state)
 
     @torch.no_grad()
     def decode(self, latents: torch.Tensor) -> torch.Tensor:

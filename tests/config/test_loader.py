@@ -9,6 +9,7 @@ from worldcast.config.loader import (
     check_at_least,
     check_choice,
     config_to_dict,
+    differences,
     load,
     merge,
     parse_overrides,
@@ -129,3 +130,11 @@ def test_the_checks_name_the_key():
     require_set(Outer(path="x"), "outer", ["path"])
     with pytest.raises(ValueError, match="not set: outer.path, outer.table"):
         require_set(Outer(), "outer", ["path", "table"])
+
+
+def test_two_configs_differ_by_the_settings_that_are_not_equal():
+    base = Outer(table={"a": 1})
+    other = Outer(Inner(rate=2.0), table={"a": 1, "b": 2})
+    assert differences(base, base) == {}
+    assert differences(base, other) == {"inner.rate": (1.0, 2.0), "table.b": (None, 2)}
+    assert differences({"x": {"y": 1}, "z": [1]}, {"x": {"y": 1}, "z": [2]}) == {"z": ([1], [2])}

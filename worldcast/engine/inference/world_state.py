@@ -1,12 +1,13 @@
 """The shared world state: what the clients of a round publish and read once per block.
 
 Every client, once per block, publishes one message and reads the latest message of every other
-client (App. B): the block it finished, as a memory entry whose fp32 latents
+client (App. B, "Deployment protocol"): the block it finished, as a memory entry whose fp32 latents
 a reader fetches to recompute the depth; the memory entries it withdrew (its step record); and, in
 the closed loop, its estimated position. :class:`WorldState` is the shared world state as one
 client sees it, with the lockstep wait and the rules of a read. Its storage is a directory shared
 by the clients (:class:`~worldcast.engine.inference.directory.DirectoryWorldState`, the paper's
-evaluation setup).
+evaluation setup) or messages over the network
+(:class:`~worldcast.engine.inference.messages.MessageWorldState`, the live demo).
 """
 
 import time
@@ -266,7 +267,7 @@ class WorldState(ABC):
                 f"{published.media_id} @ {published.t_first}: latents are {latents.shape}, not"
                 f" [{BLOCK}, C, H, W]"
             )
-        read = sha256_float32(latents)
+        read = self._read_sha256(published, latents)
         if read != published.latents_sha256:
             raise WorldStateError(
                 f"{published.media_id} @ {published.t_first}: sha256 of the latents read is"
@@ -274,6 +275,10 @@ class WorldState(ABC):
                 " (truncated, overwritten or corrupted)"
             )
         return latents
+
+    def _read_sha256(self, block: PublishedBlock, latents: np.ndarray) -> str:
+        """The sha256 of ``latents``, the stored latents of ``block`` as read."""
+        return sha256_float32(latents)
 
     # ---------------------------------------------------------------------------------- lockstep
     def _wait(
@@ -343,8 +348,9 @@ class WorldState(ABC):
     def wait_for_positions(
         self, others: Sequence[str], *, t_target: int, max_wait_s: float
     ) -> None:
-        """Lockstep of the closed loop's first six blocks, which have no step records: wait until
-        every other client published its position for block ``t_target``.
+        """Lockstep of the closed loop's blocks that have no step records (the first six, and every
+        block of a client without scene state): wait until every other client published its
+        position for block ``t_target``.
 
         Args and errors: :meth:`wait_for_others`.
         """

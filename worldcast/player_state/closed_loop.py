@@ -1,4 +1,4 @@
-"""Closed-loop inference (Sec. 3.4; App. "State model in detail", Complementary filter and Within
+"""Closed-loop deployment (Sec. 3.4; App. "State model in detail", Complementary filter and Within
 a block).
 
 Each client reads its own position off its new latent frames with the state model and fuses it with

@@ -1,7 +1,8 @@
 """A block's controls: the 16 rows (one per video frame) the generator reads for the block.
 
 A block's 16 frames are denoised together, so all their controls must be known before its 4-step
-denoising starts.
+denoising starts. A player's live input (:class:`LiveBlockControls`) also carries the turn its
+camera integrates and when each frame was taken.
 """
 
 from dataclasses import dataclass
@@ -11,7 +12,7 @@ import numpy as np
 from worldcast.data.controls import CONTROL_BUTTONS, check_weapon_ids
 from worldcast.data.latents import VIDEO_FRAMES_PER_BLOCK
 
-__all__ = ["BlockControls"]
+__all__ = ["BlockControls", "LiveBlockControls"]
 
 
 @dataclass
@@ -46,8 +47,8 @@ class BlockControls:
 
     def conditions(self) -> dict[str, np.ndarray]:
         """The block's rows of the generator's control conditions, under
-        :data:`~worldcast.modeling.controls.CONTROL_KEYS` (spelled out here: the controls load no
-        torch)."""
+        :data:`~worldcast.modeling.controls.CONTROL_KEYS` (spelled out here: a live client's
+        controls load no torch)."""
         return {
             "buttons": self.buttons,
             "view_deltas": self.view_deltas,
@@ -61,4 +62,34 @@ class BlockControls:
             raise ValueError(
                 f"a block's controls are {expected[0]} rows (one per video frame) of"
                 f" {expected[1]} buttons; got {self.buttons.shape}"
+            )
+
+
+@dataclass
+class LiveBlockControls(BlockControls):
+    """The client's controls for one block from a player's live input
+    (``player_state.source: live``): the rows of :class:`BlockControls`, with the turn and the
+    time of each frame.
+
+    Attributes:
+        turn (np.ndarray): ``[16, 2]`` float32, degrees turned during each frame (pitch, yaw),
+            raw. ``view_deltas`` is its mu-law code unless the input path fed the generator another
+            yaw (the demo's ``hybrid`` mapping, ``worldcast/demo/inputs.py``); the client's camera
+            integrates this turn.
+        times (np.ndarray): ``[16]`` float64, the session time of each frame: s on the clock all
+            clients of the session share (the live demo's room clock).
+    """
+
+    turn: np.ndarray
+    times: np.ndarray
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.turn = np.asarray(self.turn, dtype=np.float32)
+        self.times = np.asarray(self.times, dtype=np.float64)
+        n = int(self.buttons.shape[0])
+        if self.turn.shape != (n, 2) or self.times.shape != (n,):
+            raise ValueError(
+                f"live controls of {n} rows have turn [{n}, 2] and times [{n}]; got"
+                f" {self.turn.shape} and {self.times.shape}"
             )

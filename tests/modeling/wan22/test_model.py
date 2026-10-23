@@ -82,8 +82,8 @@ def test_paper_architecture():
     assert (len(model.blocks), model.state_injector.dit_block) == (30, 1)
 
 
-def test_shape_with_the_visibility_probe():
-    """The generator of stages 2s to 4 adds the probe: 8 tensors, 860,161 parameters."""
+def test_released_shape_with_the_visibility_probe():
+    """The training checkpoints of stages 2s and 3 add the probe: 8 tensors, 860,161 parameters."""
     with torch.device("meta"):
         model = WorldCastGenerator(GeneratorConfig(visibility_probe=VisibilityProbeConfig()))
     assert len(model.state_dict()) == 954

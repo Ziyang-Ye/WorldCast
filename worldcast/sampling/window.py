@@ -5,14 +5,18 @@ With the paper's 12 latent frames of recent context, window positions 0, 1-4, 5-
 the client's latent frame 0 (the round's recorded first frame), the memory frames of the retrieved
 memory entry, the recent context s-12 .. s-1 and the target frames s .. s+3: 21 latent frames, or
 17 (first frame | recent context | target frames) when nothing is retrieved. RoPE and the control
-history read these positions. :func:`gather_window` gathers every per-frame entry of a round batch
-with the latents, through one closed table (:data:`WINDOW_ENTRIES`).
+history read these positions. The generator trained without scene state attends to the ordinary
+window of its training instead (:meth:`WindowLayout.ordinary`): the first frame, as many of the
+latent frames before the block as the training window holds (36) and the target frames, 41 latent
+frames. :func:`gather_window` gathers every per-frame entry of a round batch with the latents,
+through one closed table (:data:`WINDOW_ENTRIES`).
 """
 
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import torch
 
 from worldcast.data.labels import OBSERVER_SIGNAL_KEYS
@@ -32,20 +36,35 @@ from worldcast.modeling.wan22.attention import causal_blocks
 __all__ = [
     "CONTINUOUS_COLUMNS_KEY",
     "FIRST_FRAME_LATENT",
+    "KEEP_LATENTS",
+    "KEEP_VIDEO",
     "KV_CACHE_LATENTS",
     "MEMORY_CONTINUOUS_COLUMNS_KEY",
+    "ORDINARY_RECENT",
     "ROUND_CONTINUOUS_COLUMNS_KEY",
     "WINDOW_ENTRIES",
     "WindowEntry",
     "WindowLayout",
     "gather_window",
+    "roll",
+    "slide_window_entries",
 ]
 
 #: The first frame of every window is the client's latent frame 0, the recorded first frame.
 FIRST_FRAME_LATENT = 0
 #: KV cache capacity of a client, in latent frames: the 41 latent frames of the generator's
-#: training window, as the reference runs allocated it; a rollout writes at most 25 of them.
+#: training window, as the reference runs allocated it; a rollout writes at most 25 of them, one of
+#: the generator trained without scene state all 41.
 KV_CACHE_LATENTS = 41
+#: The recent context of a block of the generator trained without scene state, once the round is
+#: long enough: the latent frames of its ten-second training window between the first frame and the
+#: target frames.
+ORDINARY_RECENT = KV_CACHE_LATENTS - 1 - BLOCK
+#: The latent frames a sliding round keeps in place (:func:`slide_window_entries`): the first frame
+#: and latent frame 1, which the depth head reads the first frame with ...
+KEEP_LATENTS = 2
+#: ... and their video frames: video frame 0 and the four of latent frame 1.
+KEEP_VIDEO = video_frame_count(KEEP_LATENTS)
 
 #: Batch key of the players' continuous state columns ``[B, F, P, 7]`` of the whole round
 #: (``worldcast.player_state.continuous_row_state``), before the window is gathered ...
@@ -153,6 +172,15 @@ class WindowLayout:
     def __post_init__(self) -> None:
         if self.recent <= 0 or self.recent % BLOCK:
             raise ValueError(f"recent must be a positive multiple of {BLOCK}, got {self.recent}")
+
+    @classmethod
+    def ordinary(cls, target_start: int) -> "WindowLayout":
+        """The window of block ``s = target_start`` of the generator trained without scene state:
+        the ordinary window of its training, first frame | recent context | target frames, the
+        recent context every latent frame before the block, at most :data:`ORDINARY_RECENT`. Up to
+        ``s = 37`` it is the training window's first ``s + 3`` latent frames, at their positions;
+        from there on it is 41 latent frames, the target frames at positions 37-40."""
+        return cls(min(ORDINARY_RECENT, int(target_start) - 1), with_memory=False)
 
     @property
     def memory_positions(self) -> list[int]:
@@ -392,3 +420,37 @@ def gather_window(
             "the gathered window holds a resurrection (alive rises along the frames)"
         )
     return out, _window_rays(batch, layout, own_latents, target_start)
+
+
+# ======================================================================================= the slide
+def roll(values: torch.Tensor | np.ndarray, axis: int, rows: int, keep: int) -> None:
+    """Move the frames of ``values`` after the first ``keep`` up by ``rows``, in place along
+    ``axis``: the oldest ``rows`` of them are dropped, and the vacated tail repeats the last frame.
+    """
+    count = int(values.shape[axis])
+
+    def at(frames: slice) -> tuple[slice, ...]:
+        return (slice(None),) * axis + (frames,)
+
+    moved = values[at(slice(keep + rows, count))]
+    values[at(slice(keep, count - rows))] = (
+        moved.clone() if torch.is_tensor(moved) else moved.copy()
+    )
+    values[at(slice(count - rows, count))] = values[at(slice(count - rows - 1, count - rows))]
+
+
+def slide_window_entries(batch: Mapping[str, Any]) -> None:
+    """Slide a round batch by one block, in place: every per-frame entry of
+    :data:`WINDOW_ENTRIES` it carries, and the client's cameras ``window_c2w`` and ``window_tans``,
+    moves up by a block (:func:`roll`), the first :data:`KEEP_LATENTS` latent frames staying. The
+    window of a block reads only the first frame and the latent frames around the block, so a round
+    of the smallest length (the first frame, the first six blocks and one more), slid by a block
+    after each block from the seventh on, gives every block the window a longer round gives it.
+    """
+    for key, entry in WINDOW_ENTRIES.items():
+        if key in batch:
+            latent = entry.frames == "latent"
+            rows, keep = (BLOCK, KEEP_LATENTS) if latent else (VIDEO_FRAMES_PER_BLOCK, KEEP_VIDEO)
+            roll(batch[key], entry.axis, rows, keep)
+    for key in ("window_c2w", "window_tans"):
+        roll(batch[key], 1, BLOCK, KEEP_LATENTS)

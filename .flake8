@@ -1,0 +1,13 @@
+# Kept in sync with pyproject.toml (black / isort: line length 100).
+
+[flake8]
+# E203, W503: black's slices and line breaks. E704: black formats stub bodies as `def f(): ...`.
+# E741: single-letter names (l) in the math.
+ignore = E203, W503, E704, E741
+max-line-length = 100
+exclude =
+    build,
+    .git,
+    __pycache__,
+    .venv,
+    venv

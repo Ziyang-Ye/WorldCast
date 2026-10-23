@@ -19,6 +19,7 @@ from tests.tools.support import load_tool, mp4_boxes
 from worldcast.config.inference import load_config
 from worldcast.data import read_round_index
 from worldcast.data.latents import FRAME_SIZE
+from worldcast.demo.library import PLAYER_COLORS
 from worldcast.engine.inference.loading import load_window
 from worldcast.player_state.projection import project_players
 
@@ -181,10 +182,11 @@ def test_the_colours_stand_out_on_dark_and_bright_scenes():
     pytest.importorskip("PIL")
     tool = load_tool("make_showcase")
     colors = tool.Showcase(recorded_round(tool, 1, players=10)).colors
-    assert colors == list(tool.PLAYER_COLORS)
+    # the live demo's, P9 lighter
+    assert colors == [*PLAYER_COLORS[:8], "#8C8AFF", PLAYER_COLORS[9]]
     dark, sand = (48, 48, 48), (200, 170, 125)  # a tunnel of Ancient, the sand of Dust2
     assert min(contrast(color, dark) for color in colors) >= 3.0
-    assert contrast("#5E5CE6", dark) < 3.0  # a darker P9 is lost in the tunnel
+    assert contrast(PLAYER_COLORS[8], dark) < 3.0
     # on sand the black edge stands out where a colour does not
     assert contrast(tool.EDGE, sand) >= 3.0 > contrast(colors[7], sand)
 

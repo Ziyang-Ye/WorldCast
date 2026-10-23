@@ -8,7 +8,7 @@ id (``worldcast.engine.inference.reference``). Bit equality needs the stack of t
 
 ``client``: run one client through latent 24 (generator and sampler; no scene state, no other
 client) and compare its first frame, its latents 0-24 and, where the reference run recorded it (the
-Table-3 runs), its entry noise. One GPU. Also writes ``latents_0_24.npy``, and the
+Table-3 runs), its entry noise. One GPU, a few minutes. Also writes ``latents_0_24.npy``, and the
 fingerprint of every block for bisecting::
 
     python tools/verify_reference.py client --config weights/paths.yaml \\

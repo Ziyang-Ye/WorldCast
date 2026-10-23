@@ -131,6 +131,8 @@ class PlayerFrames:
         states (np.ndarray): ``[T, 6]`` float32 ``x, y, z, yaw, pitch, alive`` (u, degrees, {0, 1}).
         buttons (np.ndarray): ``[T, 11]`` float32 held buttons.
         view_deltas (np.ndarray): ``[T, 2]`` float32 mu-law ``pitch, yaw`` turn.
+        turn (np.ndarray): ``[T, 2]`` float32 the turn of each frame in degrees (pitch, yaw),
+            which ``view_deltas`` encodes.
         weapon_ids (np.ndarray): ``[T]`` int64 weapon id.
         control_substeps (np.ndarray): ``[T, 4, 13]`` float32 ordered substeps: the buttons, then
             the pitch and yaw turns.
@@ -142,6 +144,7 @@ class PlayerFrames:
     states: np.ndarray
     buttons: np.ndarray
     view_deltas: np.ndarray
+    turn: np.ndarray
     weapon_ids: np.ndarray
     control_substeps: np.ndarray
     control_substep_valid: np.ndarray
@@ -179,6 +182,7 @@ class PlayerFrames:
             )
             frames.buttons[:covered] = controls.buttons
             frames.view_deltas[:covered] = controls.view_deltas
+            frames.turn[:covered] = controls.turn
             frames.weapon_ids[:covered] = controls.weapon
             substeps = align_ticks_to_ordered_substeps(**ticks)
             frames.control_substeps[:covered] = substeps.values
@@ -190,6 +194,7 @@ class PlayerFrames:
             states=states,
             buttons=frames.buttons,
             view_deltas=frames.view_deltas,
+            turn=frames.turn,
             weapon_ids=frames.weapon_ids,
             control_substeps=frames.control_substeps,
             control_substep_valid=frames.control_substep_valid,
@@ -205,6 +210,7 @@ class PlayerFrames:
             states=np.zeros((t, 6), dtype=np.float32),
             buttons=np.zeros((t, width), dtype=np.float32),
             view_deltas=np.zeros((t, 2), dtype=np.float32),
+            turn=np.zeros((t, 2), dtype=np.float32),
             weapon_ids=np.zeros((t,), dtype=np.int64),
             control_substeps=np.zeros((t, substeps, width + 2), dtype=np.float32),
             control_substep_valid=np.zeros((t, substeps), dtype=np.bool_),

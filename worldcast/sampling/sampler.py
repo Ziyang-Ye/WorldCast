@@ -223,6 +223,7 @@ class Sampler:
         *,
         frame_offset: int,
         retest: Callable[[torch.Tensor], Mapping[str, Any]] | None = None,
+        on_step: Callable[[int, torch.Tensor], None] | None = None,
     ) -> torch.Tensor:
         """Denoise one block at window positions ``frame_offset ..`` through the denoising steps.
 
@@ -233,16 +234,22 @@ class Sampler:
             retest (Callable | None): the conditions of the denoising steps after the first, from
                 the first step's x0: the predicted visibility re-tested on the block's own first
                 estimate (Sec. 3.4).
+            on_step (Callable | None): called with each step's index (from 0) and its x0, before
+                the next step (the live demo's preview of a refresh); it changes nothing.
 
         Returns:
             Tensor: x0 ``[B, F, C, H, W]`` float32.
         """
+        step = 0
 
         def call(x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-            nonlocal conditions, retest
+            nonlocal conditions, retest, step
             x0 = self.predict_x0(x, t, conditions, frame_offset=frame_offset)
+            if on_step is not None:
+                on_step(step, x0)
             if retest is not None:
                 conditions, retest = retest(x0), None
+            step += 1
             return x0
 
         return denoise_block(call, noisy, self.denoising_timesteps, self.scheduler, rng=self.rng)

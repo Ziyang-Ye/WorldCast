@@ -9,7 +9,6 @@ needs the stack of the reference runs (docs/inference.md, "Numerics").
 
 import json
 import platform
-import tempfile
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -29,7 +28,6 @@ from worldcast.utils.fingerprints import fingerprint
 from worldcast.utils.precision import GENERATOR_DTYPE
 
 from .client import Client
-from .directory import DirectoryWorldState
 from .loading import load_window
 from .serving import ServingOptions
 from .session import rounds_of
@@ -182,16 +180,14 @@ def verify_client(
     # the block the client prepares next must not wait for the round's other clients
     client = Client(cfg, ServingOptions(decoder="none", lockstep=False))
     env = environment()  # TF32 as the client switched it on
-    with tempfile.TemporaryDirectory() as alone:  # a world state of its own: nobody else publishes
-        world_state = DirectoryWorldState(alone, client=row.media_id, poll_s=cfg.world_state.poll_s)
-        client.start(row, world_state=world_state)
-        started = time.time()
-        for _ in range((FIRST_TARGET - 1) // BLOCK):
-            list(client.step())
-        seconds = time.time() - started
-        first_frame = first_frame_fingerprint(client.latents[0, :1])
-        latents = client.latents[0, :FIRST_TARGET].float().cpu().numpy()
-        client.stop()
+    client.start(row)
+    started = time.time()
+    for _ in range((FIRST_TARGET - 1) // BLOCK):
+        list(client.step())
+    seconds = time.time() - started
+    first_frame = first_frame_fingerprint(client.latents[0, :1])
+    latents = client.latents[0, :FIRST_TARGET].float().cpu().numpy()
+    client.stop()
     checks += [
         Check("first_frame", first_frame, recorded.get("first_frame")),
         Check("latents_0_24", fingerprint(latents), recorded.get("latents_0_24")),

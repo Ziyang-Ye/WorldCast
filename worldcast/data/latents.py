@@ -3,10 +3,13 @@
 A recording has 32 source frames per second; every second one is a video frame (16 fps). Latent
 frame 0 holds video frame 0 and latent frame ``f >= 1`` the video frames ``4f - 3 .. 4f`` (the
 causal VAE); a latent frame takes its state (camera, positions, depth) at its last video frame,
-``4f``. A block is four latent frames, one second of video.
+``4f``. A block is four latent frames, one second of video. A ten-second window, 41 latent frames,
+holds 161 video frames over 321 source frames.
 """
 
 import numpy as np
+
+from worldcast.config.training import WINDOW_LATENT_FRAMES
 
 __all__ = [
     "BLOCK",
@@ -21,11 +24,14 @@ __all__ = [
     "LATENT_WIDTH",
     "PIXELS_PER_CELL",
     "RECENT",
+    "SOURCE_FPS",
     "SOURCE_FRAMES_PER_LATENT",
     "SOURCE_FRAMES_PER_VIDEO_FRAME",
     "TOKEN_GRID",
     "VIDEO_FRAMES_PER_BLOCK",
     "VIDEO_FRAMES_PER_LATENT",
+    "WINDOW_SOURCE_FRAMES",
+    "WINDOW_VIDEO_FRAMES",
     "block_span",
     "block_starts",
     "last_video_frame",
@@ -42,6 +48,8 @@ __all__ = [
 SOURCE_FRAMES_PER_VIDEO_FRAME = 2
 #: Video frames per second.
 FPS = 16.0
+#: Source frames per second of the recordings.
+SOURCE_FPS = FPS * SOURCE_FRAMES_PER_VIDEO_FRAME
 #: Video frames per latent frame.
 VIDEO_FRAMES_PER_LATENT = 4
 #: Source frames per latent frame: the stride of the latent frames' time grid.
@@ -81,6 +89,12 @@ def video_frame_count(latent_frames: int) -> int:
 def source_span(video_frames: int) -> int:
     """Source frames from the first to the last of ``T`` video frames, ``1 + 2 (T - 1)``."""
     return 1 + SOURCE_FRAMES_PER_VIDEO_FRAME * (int(video_frames) - 1)
+
+
+#: Video frames of a ten-second window (``WINDOW_LATENT_FRAMES`` latent frames): 161.
+WINDOW_VIDEO_FRAMES = video_frame_count(WINDOW_LATENT_FRAMES)
+#: Source frames from a ten-second window's first to its last, ``start .. start + 320``: 321.
+WINDOW_SOURCE_FRAMES = source_span(WINDOW_VIDEO_FRAMES)
 
 
 def latent_frame_count(video_frames: int) -> int:

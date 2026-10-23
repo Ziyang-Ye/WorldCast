@@ -8,10 +8,13 @@ the CPU, as in the paper's runs; the predicted visibility reprojects the same de
 finer grid (:mod:`worldcast.player_state.predicted_visibility`), likewise as in the paper's runs.
 """
 
+import functools
+from collections.abc import Sequence
+
 import numpy as np
 from numpy.typing import ArrayLike
 
-from worldcast.data.camera import NEAR_U, grid_rays
+from worldcast.data.camera import NEAR_U, camera_rays
 from worldcast.data.latents import LATENT_GRID
 
 __all__ = [
@@ -28,6 +31,8 @@ __all__ = [
     "tolerance",
     "view_points",
     "zbuffer",
+    "zbuffers",
+    "zbuffers_of",
 ]
 
 #: Pixels of the depth grid.
@@ -58,6 +63,13 @@ def per_camera_tans(tans: ArrayLike, n: int) -> np.ndarray:
     return np.repeat(tans, n, 0) if len(tans) == 1 else tans
 
 
+@functools.cache
+def _camera_rays(tan: tuple[float, float]) -> np.ndarray:
+    rays = camera_rays(tan, LATENT_GRID)
+    rays.flags.writeable = False
+    return rays
+
+
 def pixel_rays(c2w: ArrayLike, tan: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
     """The viewing rays of one camera through the pixel centres of the depth grid.
 
@@ -72,7 +84,7 @@ def pixel_rays(c2w: ArrayLike, tan: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
     """
     c = np.asarray(c2w, dtype=np.float64).reshape(4, 4)
     t = np.asarray(tan, dtype=np.float64).reshape(2)
-    return c[:3, 3].copy(), grid_rays(c, t, LATENT_GRID)
+    return c[:3, 3].copy(), _camera_rays((float(t[0]), float(t[1]))) @ c[:3, :3].T
 
 
 def view_points(c2w: ArrayLike, tans: ArrayLike, depth: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
@@ -92,11 +104,12 @@ def view_points(c2w: ArrayLike, tans: ArrayLike, depth: ArrayLike) -> tuple[np.n
     tans = per_camera_tans(tans, len(cams))
     depth = np.asarray(depth, dtype=np.float64).reshape(len(cams), NPIX)
     hit = np.isfinite(depth) & (depth > 0) & (depth < MISS_FRACTION * FAR_U)
-    points = np.zeros((len(cams), NPIX, 3))
-    for m in range(len(cams)):
-        eye, rays = pixel_rays(cams[m], tans[m])
-        points[m] = eye[None] + np.where(hit[m], depth[m], 0.0)[:, None] * rays
-    return points, hit
+    # each camera's rays are pixel_rays', one product per camera
+    rays = np.matmul(
+        np.stack([_camera_rays((float(t[0]), float(t[1]))) for t in tans]),
+        cams[:, :3, :3].transpose(0, 2, 1),
+    )
+    return cams[:, None, :3, 3] + np.where(hit, depth, 0.0)[..., None] * rays, hit
 
 
 def project(
@@ -118,20 +131,10 @@ def project(
         ``[k]`` float64 axial depth (u) of the ``k`` points that land, in input order, and ``ok``
         ``[n]`` bool, the mask selecting them.
     """
-    c = np.asarray(c2w, dtype=np.float64).reshape(4, 4)
+    c = np.asarray(c2w, dtype=np.float64).reshape(1, 4, 4)
     t = np.asarray(tan, dtype=np.float64).reshape(2)
-    # inv(R).T rather than R.T, as in the paper's runs (the pixel counts downstream follow it)
-    q = (np.asarray(points, dtype=np.float64).reshape(-1, 3) - c[:3, 3][None]) @ np.linalg.inv(
-        c[:3, :3]
-    ).T
-    z = q[:, 2]
-    zs = np.where(z > NEAR_U, z, 1.0)
-    u, v = q[:, 0] / (zs * t[0]), q[:, 1] / (zs * t[1])
-    ok = (z > NEAR_U) & (np.abs(u) <= 1.0) & (np.abs(v) <= 1.0)
-    h, w = LATENT_GRID
-    i = np.clip(np.floor((v[ok] + 1.0) * 0.5 * h), 0, h - 1).astype(np.int64)
-    j = np.clip(np.floor((u[ok] + 1.0) * 0.5 * w), 0, w - 1).astype(np.int64)
-    return i * w + j, z[ok], ok
+    ok, _, pix, z = _landing(_in_cameras(_points(points), c[:, :3, 3], _rotations(c))[0], t)
+    return pix, z, ok
 
 
 def zbuffer(
@@ -155,18 +158,108 @@ def zbuffer(
         np.ndarray: float64 ``[NPIX]`` (no ``group``) or ``[n_groups, NPIX]``, axial depth in u,
         ``inf`` where no point lands.
     """
-    pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
-    if group is None:
-        buf = np.full(NPIX, np.inf)
-        if len(pts):
-            pix, z, _ = project(pts, c2w, tan)
-            np.minimum.at(buf, pix, z)
-        return buf
-    buf = np.full(int(n_groups) * NPIX, np.inf)
+    pts = _points(points)
+    groups = 1 if group is None else int(n_groups)
+    buf = np.full(groups * NPIX, np.inf)
     if len(pts):
-        pix, z, ok = project(pts, c2w, tan)
-        np.minimum.at(buf, np.asarray(group, dtype=np.int64)[ok] * NPIX + pix, z)
-    return buf.reshape(int(n_groups), NPIX)
+        c = np.asarray(c2w, dtype=np.float64).reshape(1, 4, 4)
+        t = np.asarray(tan, dtype=np.float64).reshape(2)
+        _, landed, pix, z = _landing(_in_cameras(pts, c[:, :3, 3], _rotations(c))[0], t)
+        if group is not None:
+            pix = np.asarray(group, dtype=np.int64)[landed] * NPIX + pix
+        np.minimum.at(buf, pix, z)
+    return buf if group is None else buf.reshape(groups, NPIX)
+
+
+def zbuffers(points: ArrayLike, c2w: ArrayLike, tans: ArrayLike) -> np.ndarray:
+    """:func:`zbuffer` of one point set in each of ``M`` cameras, in one pass.
+
+    Args:
+        points (ArrayLike): ``[n, 3]`` world points, u.
+        c2w (ArrayLike): ``[M, 4, 4]`` cameras.
+        tans (ArrayLike): ``[M, 2]``, or ``[1, 2]`` shared by all cameras.
+
+    Returns:
+        np.ndarray: float64 ``[M, NPIX]``, axial depth in u, ``inf`` where no point lands.
+    """
+    return zbuffers_of([points], c2w, tans)[0]
+
+
+def zbuffers_of(point_sets: Sequence[ArrayLike], c2w: ArrayLike, tans: ArrayLike) -> np.ndarray:
+    """:func:`zbuffer` of each of ``S`` point sets in each of ``M`` cameras, in one pass; each set
+    is projected into each camera as :func:`project` projects it.
+
+    Args:
+        point_sets (Sequence[ArrayLike]): ``S`` sets of world points ``[n_s, 3]``, u.
+        c2w (ArrayLike): ``[M, 4, 4]`` cameras.
+        tans (ArrayLike): ``[M, 2]``, or ``[1, 2]`` shared by all cameras.
+
+    Returns:
+        np.ndarray: float64 ``[S, M, NPIX]``, axial depth in u, ``inf`` where no point lands.
+    """
+    cams = np.asarray(c2w, dtype=np.float64).reshape(-1, 4, 4)
+    tans = per_camera_tans(tans, len(cams))
+    sets = [_points(points) for points in point_sets]
+    sizes = [len(points) for points in sets]
+    m, total = len(cams), sum(sizes)
+    buf = np.full(len(sets) * m * NPIX, np.inf)
+    if total:
+        eyes, rotations = cams[:, :3, 3], _rotations(cams)
+        q = np.empty((m, total, 3))
+        start = 0
+        for points in sets:
+            if len(points):
+                _in_cameras(points, eyes, rotations, out=q[:, start : start + len(points)])
+            start += len(points)
+        _, landed, pix, z = _landing(q, tans[:, None, :])
+        camera, row = np.divmod(landed, total)
+        group = np.repeat(np.arange(len(sets)), sizes)[row]
+        np.minimum.at(buf, (group * m + camera) * NPIX + pix, z)
+    return buf.reshape(len(sets), m, NPIX)
+
+
+def _points(points: ArrayLike) -> np.ndarray:
+    return np.asarray(points, dtype=np.float64).reshape(-1, 3)
+
+
+def _rotations(cams: np.ndarray) -> np.ndarray:
+    """``[M, 3, 3]``: the transposed inverse of the rotation of each camera of ``cams`` ``[M, 4,
+    4]``, by which a point's offset from the eye is multiplied."""
+    # inv(R).T rather than R.T, as in the paper's runs: integer pixel counts downstream can flip
+    # otherwise
+    return np.linalg.inv(cams[:, :3, :3]).transpose(0, 2, 1)
+
+
+def _in_cameras(
+    points: np.ndarray, eyes: np.ndarray, rotations: np.ndarray, out: np.ndarray | None = None
+) -> np.ndarray:
+    """``points`` ``[n, 3]`` in the coordinates of each of ``M`` cameras (``eyes`` ``[M, 3]``,
+    :func:`_rotations`): ``[M, n, 3]``, one product per camera."""
+    offsets = np.empty((len(eyes), len(points), 3))
+    for k in range(3):
+        np.subtract(points[None, :, k], eyes[:, None, k], out=offsets[:, :, k])
+    return np.matmul(offsets, rotations, out=out)
+
+
+def _landing(
+    q: np.ndarray, tan: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """The points in camera coordinates ``q`` ``[..., 3]`` that land (:func:`project`) in cameras of
+    tangents ``tan`` (``[2]``, or one per camera broadcast against ``q``): the mask ``ok`` of
+    ``q``'s shape less its last axis, the flat indices of the points that land, their pixels and
+    their axial depths."""
+    z = q[..., 2]
+    # u and v of a point behind the near plane are never read: its division needs no guard
+    with np.errstate(divide="ignore", invalid="ignore"):
+        u = q[..., 0] / (z * tan[..., 0])
+        v = q[..., 1] / (z * tan[..., 1])
+    ok = (z > NEAR_U) & (np.abs(u) <= 1.0) & (np.abs(v) <= 1.0)
+    landed = np.flatnonzero(ok)
+    u, v, z = (a.reshape(-1)[landed] for a in (u, v, z))
+    h, w = LATENT_GRID
+    i = np.clip(np.floor((v + 1.0) * 0.5 * h), 0, h - 1).astype(np.int64)
+    j = np.clip(np.floor((u + 1.0) * 0.5 * w), 0, w - 1).astype(np.int64)
+    return ok, landed, i * w + j, z
 
 
 def covered(zbuf: ArrayLike, depth: ArrayLike, hit: ArrayLike) -> np.ndarray:

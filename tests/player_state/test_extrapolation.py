@@ -17,6 +17,7 @@ from worldcast.player_state.extrapolation import (
     PositionTrack,
     PredictedStateTable,
     PriorState,
+    _relaxed_velocity,
     extrapolate,
     physics_prior_displacement,
     physics_prior_track,
@@ -39,6 +40,12 @@ def test_no_keys_no_displacement():
     start = torch.tensor([[[10.0, 20.0, 30.0]]])
     track = physics_prior_track(_idle(), torch.zeros(1, T_ROWS), start, prior=PRIOR)
     assert torch.equal(track, start.expand(1, T_ROWS, 3))
+
+
+def test_the_priors_top_speed_is_the_running_speed():
+    """The fastest target speed of the table, which the speed ramp reaches after 24 substeps of a
+    key held: 245 u/s."""
+    assert PRIOR.top_speed == 245.0
 
 
 def test_forward_moves_along_the_yaw_and_speeds_up():
@@ -133,6 +140,72 @@ def test_the_integrator_goes_on_from_the_state_a_call_left():
     rest = PriorState.at_rest(1)
     again, _ = physics_prior_displacement(controls, yaw, prior=PRIOR, state=rest)
     assert torch.equal(again, whole)
+
+
+def _torch_relaxation(want: torch.Tensor, relaxes: torch.Tensor, velocity: torch.Tensor):
+    """The relaxation of the planar velocity as torch runs it, substep by substep: the reference
+    the prior's numpy scan follows operation by operation."""
+    wanted = torch.linalg.norm(want, dim=-1, keepdim=True)
+    up, down = torch.tensor(PRIOR.alpha_up), torch.tensor(PRIOR.alpha_down)
+    out, planar = [], velocity
+    for target, speed, relaxing in zip(want.unbind(1), wanted.unbind(1), relaxes.unbind(1)):
+        if relaxing.any():
+            alpha = torch.where(speed >= torch.linalg.norm(planar, dim=-1, keepdim=True), up, down)
+            relaxed = planar + alpha * (target - planar)
+            planar = torch.where(relaxing[:, None], relaxed, planar)
+        out.append(planar)
+    return torch.stack(out, 1)
+
+
+def test_the_relaxation_is_torchs_bit_for_bit(monkeypatch):
+    """The planar velocity relaxes as torch's float32 arithmetic has it, to the bit, wherever the
+    velocity's own speed lies against the keys': far from them, so close that torch's norm decides,
+    at rest, slowed to the smallest float32 velocities. Running at the keys' speed, the velocity
+    stays a few units of rounding short of it, the same bits substep after substep: torch's norm is
+    asked a few times over 400 substeps of three players."""
+    norms, norm = [], torch.linalg.norm
+    monkeypatch.setattr(torch.linalg, "norm", lambda *a, **k: norms.append(1) or norm(*a, **k))
+    rng = np.random.default_rng(0)
+    asked = 0
+    for case in range(80):
+        players, substeps = int(rng.integers(1, 12)), int(rng.choice([4, 64, 188, 400]))
+        heading = np.deg2rad(rng.uniform(-180, 180, (players, 1)))
+        heading = heading + np.cumsum(
+            rng.normal(0, rng.choice([0.0, 0.01]), (players, substeps)), 1
+        )
+        speed = rng.choice([0.0, 34.0, 245.0, 111.8], (players, 1)) * (
+            rng.random((players, 1)) < 0.9
+        )
+        speed = np.repeat(speed, substeps, 1)
+        speed[:, substeps // 2 :] *= rng.choice([1.0, 0.5, 0.0])
+        want = np.stack([speed * np.cos(heading), speed * np.sin(heading)], -1).astype(np.float32)
+        relaxes = rng.random((players, substeps)) < rng.choice([1.0, 0.9])
+        velocity = (rng.normal(0, 1, (players, 2)) * rng.choice([0.0, 250.0, 1e-20, 1e-43])).astype(
+            np.float32
+        )
+        norms.clear()
+        got = _relaxed_velocity(
+            velocity, want, norm(torch.from_numpy(want), dim=-1).numpy(), relaxes, PRIOR
+        )
+        asked += len(norms)
+        expected = _torch_relaxation(
+            torch.from_numpy(want), torch.from_numpy(relaxes), torch.from_numpy(velocity)
+        )
+        assert np.array_equal(got.view(np.int32), expected.numpy().view(np.int32)), case
+    assert asked > 0
+    for heading in np.deg2rad([0.0, 30.0, 47.0, 90.0, 123.4, -150.0]):
+        speeds = np.array([245.0, 111.8, 34.0])[:, None, None]
+        want = np.broadcast_to(speeds * [np.cos(heading), np.sin(heading)], (3, 400, 2))
+        want = np.ascontiguousarray(want, np.float32)
+        norms.clear()
+        _relaxed_velocity(
+            np.zeros((3, 2), np.float32),
+            want,
+            norm(torch.from_numpy(want), dim=-1).numpy(),
+            np.ones((3, 400), bool),
+            PRIOR,
+        )
+        assert len(norms) <= 10
 
 
 def _round_batch() -> dict:

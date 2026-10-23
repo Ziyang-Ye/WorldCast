@@ -5,12 +5,9 @@ import math
 import pytest
 import torch
 
-from worldcast.data.game import EYE_HEIGHT
+from worldcast.data.game import BODY_HEIGHT, BODY_HEIGHT_CROUCHED, EYE_HEIGHT, VFOV_DEGREES
 from worldcast.player_state.projection import (
-    BODY_HEIGHT,
-    BODY_HEIGHT_CROUCHED,
     CROUCH_COLUMN,
-    VFOV_DEGREES,
     angles_from_controls,
     body_height,
     player_boxes,

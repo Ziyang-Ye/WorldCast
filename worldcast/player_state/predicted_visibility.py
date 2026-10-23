@@ -43,6 +43,7 @@ __all__ = [
     "PLAYER_LIFT_U",
     "POSE_RADIUS_U",
     "PredictedVisibility",
+    "TargetGeometry",
     "block_depth_frames",
     "ztest_labels",
 ]
@@ -73,7 +74,8 @@ def _depth_frames(log_depth: torch.Tensor, first_latent: int) -> dict[int, torch
 # ``inv(R).T``); every finite positive depth is back-projected (the scene state drops the far
 # plane); a point lands in a cell for ``0 <= col < w`` and ``0 <= row < h`` (the scene state: ``|u|,
 # |v| <= 1``), and a cell without a point is NaN. The labels are thresholded at cell borders and at
-# the margin, so they follow this arithmetic and not the scene state's.
+# the margin, so they follow this arithmetic and not the scene state's. (Live play, not the paper's:
+# ``_zbuffer`` runs where its points are, the client's device; LiveVisibility.)
 
 
 def _project(
@@ -134,13 +136,15 @@ def _window_median(
     depth: torch.Tensor, cx: torch.Tensor, cy: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Median of the 2 x 2 cells ``(cy-1..cy) x (cx-1..cx)`` (clamped at 0) that hold a depth, and
-    their number ``n``, each ``[R, P]``; NaN where ``n`` is 0."""
-    r, p = cx.shape
+    their number ``n``, each ``[..., R, P]`` for ``cx``, ``cy`` ``[..., R, P]`` on ``depth`` ``[R,
+    H, W]``; NaN where ``n`` is 0."""
+    r, p = cx.shape[-2:]
     rows = torch.stack([(cy - 1).clamp(min=0), cy], -1)
     cols = torch.stack([(cx - 1).clamp(min=0), cx], -1)
     w = int(depth.shape[-1])
-    flat = (rows[..., :, None] * w + cols[..., None, :]).reshape(r, p * 4)
-    vals = depth.reshape(r, -1).gather(1, flat).view(r, p, 4)
+    flat = (rows[..., :, None] * w + cols[..., None, :]).reshape(*cx.shape[:-2], r, p * 4)
+    vals = depth.reshape(r, -1).expand(*cx.shape[:-2], r, -1).gather(-1, flat)
+    vals = vals.view(*cx.shape, 4)
     valid = ~torch.isnan(vals)
     n = valid.sum(-1)
     # the n known depths sort first (the unknown ones as inf); their median is the mean of the two
@@ -173,16 +177,17 @@ def ztest_labels(
     Returns:
         tuple[torch.Tensor, torch.Tensor]: ``(visible, valid)``, each ``[R, P]`` bool.
     """
+    tested = [points]
     if pose_radius > 0:
-        visible, valid = ztest_labels(points, c2w, depth, live=live, tans=tans)
         for k in range(8):
             a = k * math.pi / 4.0
             offset = points.new_tensor([pose_radius * math.cos(a), pose_radius * math.sin(a), 0.0])
-            visible = visible | ztest_labels(points + offset, c2w, depth, live=live, tans=tans)[0]
-        return visible, valid | visible
+            tested.append(points + offset)
+    # each point set is projected on its own (the cameras' products as they were), and tested
+    # with the others
+    col, row, z = (torch.stack(a) for a in zip(*(_project(p, c2w, tans) for p in tested)))
     h, w = LATENT_GRID
     cell = PIXELS_PER_CELL
-    col, row, z = _project(points, c2w, tans)
     # the frustum test is on the pixel grid: the point must lie half a pixel inside the frame
     fc, fr = col * cell, row * cell
     in_view = (
@@ -192,9 +197,10 @@ def ztest_labels(
     cy = fr.floor().clamp(0, h * cell - 1).long() // cell
     med, n = _window_median(depth.double(), cx, cy)
     live = live.bool()
-    hole = in_view & (n == 0) & live
-    visible = live & in_view & (n > 0) & (med - z > -MARGIN_U)
-    return visible, live & ~hole
+    visible = (live & in_view & (n > 0) & (med - z > -MARGIN_U)).any(0)
+    hole = in_view[0] & (n[0] == 0) & live
+    valid = live & ~hole
+    return visible, (valid | visible) if pose_radius > 0 else valid
 
 
 def block_depth_frames(depth_fn: DepthFn, x0: torch.Tensor) -> np.ndarray:
@@ -208,6 +214,41 @@ def block_depth_frames(depth_fn: DepthFn, x0: torch.Tensor) -> np.ndarray:
     for c in range(VIDEO_FRAMES_PER_LATENT):
         out[c::VIDEO_FRAMES_PER_LATENT] = np.exp(grid[:, c])
     return out
+
+
+class TargetGeometry:
+    """What a block's 16 video frames are re-tested with after its first denoising step
+    (:meth:`PredictedVisibility.relabel_target`), copied: the client's cameras ``[16, 4, 4]``, the
+    test points ``[16, P, 3]`` and the players in the world ``[16, P]``, with the frustum's
+    half-angle tangents. A live client that refreshes takes it at the block's cut, so that the
+    re-test of a version does not read a later cut's (``LiveRollout.cut``)."""
+
+    def __init__(
+        self, points: torch.Tensor, cameras: torch.Tensor, live: torch.Tensor, tans: torch.Tensor
+    ) -> None:
+        self.points, self.cameras, self.live, self.tans = points, cameras, live, tans
+
+    def labels(self, depth_frames: np.ndarray) -> tuple[torch.Tensor, torch.Tensor]:
+        """``(visible, valid)`` ``[16, P]`` of the block's video frames, each against its depth
+        ``[16, 24, 42]`` (:func:`block_depth_frames` of the block's x0)."""
+        d = torch.as_tensor(np.asarray(depth_frames, dtype=np.float64))
+        if bool(torch.isnan(d).any()) or bool((d <= 0).any()):
+            raise ValueError("the x0 depth has NaN or non-positive cells")
+        return ztest_labels(
+            self.points, self.cameras, d, live=self.live, tans=self.tans, pose_radius=POSE_RADIUS_U
+        )
+
+    def relabel(self, window: Mapping[str, torch.Tensor], depth_frames: np.ndarray) -> dict:
+        """The gathered window with its last 16 video frames re-tested against ``depth_frames``
+        ``[16, 24, 42]`` (:meth:`labels`)."""
+        visible, valid = self.labels(depth_frames)
+        labels, known = window["client_visibility"], window["client_visibility_valid"]
+        last = int(labels.shape[-1])
+        where = torch.arange(last - len(visible), last, dtype=torch.long)
+        new_labels, new_known = labels.clone(), known.clone()
+        new_labels[0, :, where] = visible.T.to(labels.dtype)
+        new_known[0, :, where] = valid.T.to(known.dtype)
+        return dict(window, client_visibility=new_labels, client_visibility_valid=new_known)
 
 
 class PredictedVisibility:
@@ -245,6 +286,7 @@ class PredictedVisibility:
         self.cameras = torch.zeros(video_frames, 4, 4, dtype=torch.float64)
         self.points = torch.zeros(video_frames, players, 3, dtype=torch.float64)
         self.update_frames(np.arange(video_frames))
+        self._first_frame: tuple | None = None
 
     def update_frames(self, video_frames: Sequence[int] | np.ndarray) -> None:
         """Re-read the client's cameras and the test points at ``video_frames`` from the table."""
@@ -316,7 +358,14 @@ class PredictedVisibility:
         )
 
     # -- gathered windows: labels written into the round batch before the window gather
-    def for_block(self, s: int, batch: Mapping[str, torch.Tensor], latents: torch.Tensor) -> dict:
+    def for_block(
+        self,
+        s: int,
+        batch: Mapping[str, torch.Tensor],
+        latents: torch.Tensor,
+        *,
+        recent: int = RECENT,
+    ) -> dict:
         """The round batch with the labels the window of block ``s`` gathers.
 
         Args:
@@ -324,6 +373,10 @@ class PredictedVisibility:
             batch (Mapping[str, torch.Tensor]): the round batch.
             latents (torch.Tensor): ``[N, 48, 24, 42]`` the client's latent frames; ``latents[:s]``
                 are read.
+            recent (int): the latent frames of the window's recent context, each labelled
+                against its own depth: the paper's 12, or more in the ordinary window of the
+                generator trained without scene state. The target block is labelled against the
+                last 12 either way.
 
         Returns:
             dict: ``batch`` with ``client_visibility`` / ``client_visibility_valid`` predicted on
@@ -336,12 +389,12 @@ class PredictedVisibility:
         visible = torch.zeros(self.live.shape[1], video_frames, dtype=torch.bool)
         valid = torch.zeros_like(visible)
 
-        recent_start = max(1, s - RECENT)
+        recent_start = max(1, s - recent)
         depth_start = max(0, min(recent_start - 1, s - RECENT))
         depth = self._depth(latents[depth_start:s], depth_start)
-        recent = video_frames_of(recent_start, s - recent_start)
-        v, ok = self.generated_labels(recent, depth)
-        visible[:, recent], valid[:, recent] = v.T, ok.T
+        frames = video_frames_of(recent_start, s - recent_start)
+        v, ok = self.generated_labels(frames, depth)
+        visible[:, frames], valid[:, frames] = v.T, ok.T
 
         context_start = max(0, s - RECENT)
         context = video_frames_of(context_start, s - context_start)
@@ -349,44 +402,48 @@ class PredictedVisibility:
         v, ok = self.target_labels(target, depth, context)
         visible[:, target], valid[:, target] = v.T, ok.T
 
-        # the first frame (latent frame 0), against its own depth read with latent frame 1
-        first_frame = self._depth(latents[0 : min(2, s)], 0)[0]
-        v, ok = ztest_labels(
-            self.points[:1],
-            self.cameras[:1],
-            first_frame[None].double(),
-            live=self.live[:1],
-            tans=self.tans,
-            pose_radius=POSE_RADIUS_U,
-        )
-        visible[:, 0], valid[:, 0] = v[0], ok[0]
+        visible[:, 0], valid[:, 0] = self._first_frame_labels(latents[0 : min(2, s)])
         out = dict(batch)
         out["client_visibility"] = visible[None].to(template.dtype)
         out["client_visibility_valid"] = valid[None].to(batch["client_visibility_valid"].dtype)
         return out
+
+    def _first_frame_labels(self, latents: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """``(visible, valid)`` ``[P]`` of the first frame (latent frame 0) against its own depth,
+        read with the latent frame after it in ``latents``; kept for as long as the depth head,
+        those latent frames and the first frame's camera, test points and players stay the same."""
+        inputs = (latents, self.cameras[0], self.points[0], self.live[0])
+        kept = self._first_frame
+        if (
+            kept is None
+            or kept[2] is not self.depth_fn
+            or not all(torch.equal(a, b) for a, b in zip(kept[0], inputs))
+        ):
+            depth = self._depth(latents, 0)[0]
+            v, ok = ztest_labels(
+                self.points[:1],
+                self.cameras[:1],
+                depth[None].double(),
+                live=self.live[:1],
+                tans=self.tans,
+                pose_radius=POSE_RADIUS_U,
+            )
+            kept = tuple(a.clone() for a in inputs), (v[0], ok[0]), self.depth_fn
+            self._first_frame = kept
+        return kept[1]
 
     def relabel_target(
         self, window: Mapping[str, torch.Tensor], s: int, depth_frames: np.ndarray
     ) -> dict:
         """The gathered window with its last 16 video frames (block ``s``) re-tested against
         ``depth_frames`` ``[16, 24, 42]`` (:func:`block_depth_frames` of the block's x0)."""
-        frames = video_frames_of(s, BLOCK)
-        visible, valid = self._retest(frames, depth_frames)
-        labels, known = window["client_visibility"], window["client_visibility_valid"]
-        last = int(labels.shape[-1])
-        where = torch.arange(last - len(frames), last, dtype=torch.long)
-        new_labels, new_known = labels.clone(), known.clone()
-        new_labels[0, :, where] = visible.T.to(labels.dtype)
-        new_known[0, :, where] = valid.T.to(known.dtype)
-        return dict(window, client_visibility=new_labels, client_visibility_valid=new_known)
+        return self.target_geometry(s).relabel(window, depth_frames)
 
-    def _retest(
-        self, video_frames: Sequence[int], depth_frames: np.ndarray
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        d = torch.as_tensor(np.asarray(depth_frames, dtype=np.float64))
-        if bool(torch.isnan(d).any()) or bool((d <= 0).any()):
-            raise ValueError("the x0 depth has NaN or non-positive cells")
-        return self.generated_labels(video_frames, {v: d[i] for i, v in enumerate(video_frames)})
+    def target_geometry(self, s: int) -> "TargetGeometry":
+        """The cameras, test points and players in the world of block ``s``'s video frames as they
+        are now: what :meth:`relabel_target` tests them with."""
+        idx = torch.as_tensor(video_frames_of(s, BLOCK), dtype=torch.long)
+        return TargetGeometry(self.points[idx], self.cameras[idx], self.live[idx], self.tans)
 
     # -- the first six blocks: ``player_visible`` per latent frame of the round
     def target_visible(self, start: int, latents: torch.Tensor) -> torch.Tensor:
@@ -418,5 +475,5 @@ class PredictedVisibility:
     def retested_visible(self, start: int, depth_frames: np.ndarray) -> torch.Tensor:
         """``player_visible`` ``[4, P]`` of the block at latent frame ``start``, re-tested against
         the depth ``[16, 24, 42]`` of its x0 estimate."""
-        visible, _ = self._retest(video_frames_of(start, BLOCK), depth_frames)
+        visible, _ = self.target_geometry(start).labels(depth_frames)
         return fold_video_frames(visible, int(start), BLOCK)

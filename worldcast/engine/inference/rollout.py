@@ -14,6 +14,12 @@ frames. Such a block splits at its controls::
 
 All of it runs on one thread, in block order: the denoising steps draw from the device's global
 RNG.
+
+The generator trained without scene state (``model.scene_state: false``; not the paper's client)
+runs the same loop without the scene state: a block exchanges only the player states, its window is
+the ordinary window of the generator's training (first frame | the latent frames before the block,
+at most 36 | target frames, :meth:`~worldcast.sampling.window.WindowLayout.ordinary`), its context
+is written clean, and nothing is published as a memory entry.
 """
 
 from collections.abc import Callable, Mapping
@@ -32,6 +38,7 @@ from worldcast.data.latents import (
     LATENT_SHAPE,
     RECENT,
     VIDEO_FRAMES_PER_BLOCK,
+    last_video_frame,
     source_frame,
     video_frames_of,
 )
@@ -55,7 +62,8 @@ from worldcast.player_state import (
     continuous_row_state,
     memory_continuous_columns,
 )
-from worldcast.sampling.sampler import Sampler
+from worldcast.player_state.states import CONT_PITCH_INDEX, CONT_YAW_INDEX, STATE_BASE_DIM
+from worldcast.sampling.sampler import CONTEXT_NOISE, Sampler
 from worldcast.sampling.schedulers import entry_noise, paired_context_noise
 from worldcast.sampling.window import (
     MEMORY_CONTINUOUS_COLUMNS_KEY,
@@ -67,11 +75,20 @@ from worldcast.scene_state import RetrieveResult, SceneState
 from worldcast.utils.seed import set_seed
 
 from .controls import BlockControls
+from .field_rows import FieldRows
 from .loading import ClientModels, load_closed_loop
 from .memory_blocks import MemoryBlocks
+from .replicas import GeneratorReplica
 from .world_state import StepRecord, WorldState
 
-__all__ = ["BlockRead", "PreparedBlock", "Rollout"]
+__all__ = ["BlockRead", "PreparedBlock", "Rollout", "context_noise"]
+
+
+def context_noise(cfg: InferenceConfig) -> int:
+    """The context noise of the client's generator (``model.scene_state``): :data:`CONTEXT_NOISE`
+    with scene state; without, 0, a clean context, as that stage was trained (a clean context copy
+    under teacher forcing, a clean cache in the distillation's rollout)."""
+    return CONTEXT_NOISE if cfg.model.stage.scene_state else 0
 
 
 @dataclass
@@ -81,7 +98,8 @@ class BlockRead:
     Attributes:
         t_target (int): the source frame of the block's first latent frame.
         admitted (int): the other clients' blocks admitted before it.
-        window_frames (int): latent frames of its window, 21, or 17 when nothing was retrieved.
+        window_frames (int): latent frames of its window, 21, or 17 when nothing was retrieved
+            (without scene state: 29 to 41, :meth:`WindowLayout.ordinary`).
         entry (tuple[str, int] | None): the retrieved memory entry: its owner and ``t_first``.
         coverage (int): missing pixels the entry covers.
         missing (int): pixels of the block no recent latent frame reaches.
@@ -107,7 +125,8 @@ class PreparedBlock:
         context (int): latent frames of the window before the target frames.
         cameras (Tensor): ``[N, 4, 4]`` the client's cameras as known when the block started.
         batch (dict[str, Any]): the window's batch.
-        rays (dict[str, Tensor]): the ray embedding's conditions of the window.
+        rays (dict[str, Tensor]): the ray embedding's conditions of the window (none without
+            scene state).
         read (BlockRead): what the block read.
     """
 
@@ -134,7 +153,18 @@ class Rollout:
         world_state (WorldState): the shared world state.
         lockstep (bool): wait for the other clients before each block.
         dtype (torch.dtype): the generator's dtype.
+
+    Raises:
+        ValueError: the sampler writes the context at another noise than the generator's
+            (:func:`context_noise`).
     """
+
+    #: Whether the rollout has no last block (live play); the rest end with their round.
+    open_ended = False
+    #: The client's generator on other cards (``ServingOptions.refresh_devices``), on which every
+    #: block's context is prefilled too (:class:`~worldcast.engine.inference.replicas.
+    #: GeneratorReplica`); the client sets them.
+    replicas: tuple[GeneratorReplica, ...] = ()
 
     def __init__(
         self,
@@ -147,7 +177,13 @@ class Rollout:
         lockstep: bool,
         dtype: torch.dtype,
     ) -> None:
+        if sampler.context_noise != context_noise(cfg):
+            raise ValueError(
+                f"the sampler writes the context at {sampler.context_noise}, the generator of"
+                f" model.scene_state {cfg.model.scene_state} at {context_noise(cfg)}"
+            )
         self.cfg, self.models, self.sampler = cfg, models, sampler
+        self.scene_state = cfg.model.scene_state
         self.device, self.dtype = torch.device(cfg.run.device), dtype
         self.recording, self.world_state = window, world_state
         self.media_id, self.start_frame = window.row.media_id, window.row.start_frame
@@ -191,13 +227,17 @@ class Rollout:
         # the entry noise and the first frame; the store keeps the clean latents the scene state
         # and the windows read
         shape = LATENT_SHAPE
-        self.noise = entry_noise(
-            cfg.run.seed,
-            cfg.run.latent_frames,
-            self.latent_frames,
-            shape,
-            device=self.device,
-            dtype=dtype,
+        self.noise = (
+            None
+            if self.open_ended
+            else entry_noise(
+                cfg.run.seed,
+                cfg.run.latent_frames,
+                self.latent_frames,
+                shape,
+                device=self.device,
+                dtype=dtype,
+            )
         )
         first_frame = load_first_latent(
             cfg.paths.latent_cache_root, self.media_id, self.start_frame
@@ -222,13 +262,20 @@ class Rollout:
         self.sampler.cache.reset()
         self.sampler.write_context(self.output[:, :1], self._drawn(0, 1), frame_offset=0)
 
-    def denoise(self, f0: int, controls: Callable[[], BlockControls | None]) -> torch.Tensor:
+    def denoise(
+        self,
+        f0: int,
+        controls: Callable[[], BlockControls | None],
+        on_step: Callable[[int, torch.Tensor], None] | None = None,
+    ) -> torch.Tensor:
         """Generate block ``f0`` (latent frames ``f0 .. f0 + 3``) into :attr:`output`.
 
         Args:
             f0 (int): the block's first latent frame.
             controls (Callable): called right before the denoising for the block's controls;
                 ``None`` keeps the recorded ones.
+            on_step (Callable | None): a block that reads the scene state: called with each
+                denoising step's index and x0 (:meth:`~worldcast.sampling.sampler.Sampler.denoise`).
 
         Returns:
             Tensor: the block's x0 ``[1, 4, 48, 24, 42]`` float32.
@@ -248,8 +295,8 @@ class Rollout:
         if taken is not None:
             self._take_controls(f0, taken)
         if reads_scene:
-            self.prepared = self._at_cut(self.prepared, taken)
-            x0 = self._denoise_on_window(f0, self.prepared)
+            self.prepared = self._at_cut(f0, self.prepared, taken)
+            x0 = self._denoise_on_window(f0, self.prepared, on_step)
         else:
             x0 = self._denoise_on_round(f0)
         self.output[:, f0 : f0 + BLOCK] = x0
@@ -257,7 +304,7 @@ class Rollout:
 
     def commit(self, f0: int, x0: torch.Tensor) -> BlockRead | None:
         """Keep block ``f0`` in the latent store and publish it; returns what it read from the
-        scene state (``None`` for the first six blocks)."""
+        scene state, or its window without (``None`` for the first six blocks)."""
         prepared, self.prepared = self.prepared, None
         # as in the paper's runs, the store keeps the first six blocks bf16-rounded and later
         # blocks' x0 in fp32
@@ -276,31 +323,94 @@ class Rollout:
         if FIRST_TARGET <= following <= self.latent_frames - BLOCK:
             self.prepared = self._prepare(following)
 
+    # ------------------------------------------------------------------ the rows the field read
+    def field_rows(self, latent: int) -> FieldRows:
+        """Every player's row as the player state field read it at latent frame ``latent``.
+
+        The rows are the round's player-state table at the latent frame's last video frame, with
+        the yaw and pitch of its continuous columns (latent frames 1-24 read a 6-wide table, which
+        integrates the same turns without the yaw wrap and the pitch clamp). A dead player's row is
+        the table's, with alive 0; the field draws its corpse at the x, y, z of its last alive row,
+        which the rows do not carry. Once a block is committed its rows are never rewritten, so
+        another thread may read them while the rollout runs, without a lock; before, they are the
+        rows known so far (under ``predicted``, the positions read for the block rewrite them).
+
+        Args:
+            latent (int): a latent frame of the rollout.
+
+        Returns:
+            FieldRows: the rows; the client's slot is :attr:`FieldRows.OWN`, a slot without media
+            in the round :attr:`FieldRows.HIDDEN`, every other :attr:`FieldRows.RECORDED`;
+            ``drawn`` is ``None``.
+
+        Raises:
+            ValueError: ``latent`` is not a latent frame of the rollout.
+        """
+        latent = int(latent)
+        if not 0 <= latent < self.latent_frames:
+            raise ValueError(
+                f"latent frame {latent} of a rollout of {self.latent_frames} latent frames"
+            )
+        table = self.round_batch["player_states"][0, :, last_video_frame(latent)]
+        columns = self.continuous_rows[0, latent].numpy()
+        states = table.numpy().astype(np.float64)
+        states[:, 3] = columns[:, CONT_YAW_INDEX - STATE_BASE_DIM]
+        states[:, 4] = columns[:, CONT_PITCH_INDEX - STATE_BASE_DIM]
+        slots = self.recording.round_slots
+        source = np.array(
+            [FieldRows.RECORDED if s in slots else FieldRows.HIDDEN for s in range(len(states))],
+            dtype=np.int8,
+        )
+        source[self.slot] = FieldRows.OWN
+        return FieldRows(states, source, None, self.cfg.player_state.source)
+
+    def camera_pitch(self, frame: int) -> float:
+        """The pitch of the client's own camera at video frame ``frame``, degrees (> 0 looks down):
+        the own row of the round's player-state table at that frame, where :meth:`field_rows` gives
+        a latent frame's rows at its last video frame only. Another thread may read it as it reads
+        :meth:`field_rows`: a committed block's rows are never rewritten.
+
+        Raises:
+            ValueError: ``frame`` is not a video frame of the rollout.
+        """
+        frame, states = int(frame), self.round_batch["player_states"]
+        frames = int(states.shape[2])
+        if not 0 <= frame < frames:
+            raise ValueError(f"video frame {frame} of a rollout of {frames} video frames")
+        return float(states[0, self.slot, frame, 4])
+
     # --------------------------------------------------------------------------- the conditions
     def _inputs(self, batch: Mapping[str, Any], rays: Mapping[str, torch.Tensor]) -> WindowInputs:
+        """The window's latents and conditions; without scene state no rays and no observer
+        signals, as that generator was trained."""
         return window_inputs(
             batch,
             prompt_embeds=self.models.prompt_embeds,
             device=self.device,
             dtype=self.dtype,
-            rays=rays,
+            observer_signals=self.scene_state,
+            rays=rays if self.scene_state else None,
         )
 
     def _conditions(
-        self, batch: Mapping[str, Any], rays: Mapping[str, torch.Tensor]
+        self, batch: Mapping[str, Any], rays: Mapping[str, torch.Tensor] | None
     ) -> dict[str, Any]:
         return window_conditions(
             batch,
             prompt_embeds=self.models.prompt_embeds,
             device=self.device,
             dtype=self.dtype,
-            rays=rays,
+            rays=rays if self.scene_state else None,
+            observer_signals=self.scene_state,
         )
 
     def _round_conditions(self) -> dict[str, Any]:
         """The whole round's conditions, for the first six blocks (closed loop: the client's
-        cameras as predicted so far)."""
+        cameras as predicted so far; under live controls ``LiveRollout._round_target`` writes a
+        block's latent frames of them again by this rule)."""
         batch = dict(self.round_batch)
+        if not self.scene_state:
+            return self._conditions(batch, None)
         if self.closed is not None:
             batch["window_c2w"] = self.closed.cameras.as_predicted()[None].float()
         rays = RayConditions.contiguous(batch["window_c2w"], batch["window_tans"])
@@ -377,6 +487,25 @@ class Rollout:
         """The latents of another client's admitted block, as the scene state copies them."""
         return self.world_state.block_latents(block, t)
 
+    def _own_latents(self) -> Any:
+        """The client's own latents, ``[N, 48, 24, 42]``: what the scene state reads an own block's
+        four latent frames from, ``latents[f0 : f0 + 4]``."""
+        return self.store
+
+    def _refresh_continuous_rows(self, f0: int) -> None:
+        """The round's continuous columns, read again from the table the closed loop wrote for
+        block ``f0``."""
+        self.continuous_rows = continuous_row_state(self.round_batch)
+
+    def _block_key(self, f0: int) -> int:
+        """The name of block ``f0`` in the keys of its context-write noise."""
+        return f0
+
+    def _recent(self, f0: int) -> int:
+        """The latent frames of recent context in the window of block ``f0``: :data:`RECENT`, or
+        without scene state those of :meth:`WindowLayout.ordinary`."""
+        return RECENT if self.scene_state else WindowLayout.ordinary(f0).recent
+
     def _entry_noise(self, f0: int) -> torch.Tensor:
         """The entry noise of block ``f0``, ``[1, 4, 48, 24, 42]``: its frames of the draw for the
         requested length."""
@@ -384,10 +513,10 @@ class Rollout:
 
     def _exchange(self, f0: int, t: int) -> tuple[torch.Tensor, int, RetrieveResult]:
         """The exchange with the shared world state before block ``f0`` at source frame ``t``
-        (App. B): the client's cameras, the number of blocks admitted and
+        (App. B, "Deployment protocol"): the client's cameras, the number of blocks admitted and
         what retrieval returned."""
         world_state, scene, known, closed = self.world_state, self.scene, self.known, self.closed
-        scene.publish_own(known.blocks, t_target=t, own_latents=self.store)
+        scene.publish_own(known.blocks, t_target=t, own_latents=self._own_latents())
         withdrawn, resident = scene.drain_withdrawals()
         if closed is not None:
             closed.publish_position(f0, self.store)
@@ -399,8 +528,7 @@ class Rollout:
         if closed is not None:
             cameras = closed.cameras.for_block(f0)
             closed.read_positions(f0)
-            # the round's continuous columns, read again from the table the closed loop wrote
-            self.continuous_rows = continuous_row_state(self.round_batch)
+            self._refresh_continuous_rows(f0)
         scene.publish_others(known.blocks, t_target=t)
         scene.follow_withdrawals(
             world_state if self.others else _EarlierSteps(world_state, t),
@@ -416,15 +544,40 @@ class Rollout:
         )
         return cameras, admitted, retrieved
 
+    def _exchange_states(self, f0: int, t: int) -> torch.Tensor:
+        """The exchange before block ``f0`` at source frame ``t`` of a client without scene state:
+        the player states only. In the closed loop (and under live controls) the client publishes
+        its position, waits for the other clients' (with lockstep) and reads them. Returns the
+        client's cameras."""
+        closed = self.closed
+        if closed is None:
+            return self.client_c2w
+        closed.publish_position(f0, self.store)
+        self.world_state.wait_for_positions(
+            closed.others if self.others else (),
+            t_target=t,
+            max_wait_s=self.cfg.world_state.wait_s,
+        )
+        cameras = closed.cameras.for_block(f0)
+        closed.read_positions(f0)
+        self._refresh_continuous_rows(f0)
+        return cameras
+
     def _prepare(self, f0: int) -> PreparedBlock:
         """Everything of block ``f0`` before its controls: the exchange with the shared world
         state, the window, its conditions and the KV prefill."""
         t = self.source_frame(f0)
-        cameras, admitted, retrieved = self._exchange(f0, t)
-        entry = retrieved.entry
+        retrieved = None
+        if self.scene_state:
+            cameras, admitted, retrieved = self._exchange(f0, t)
+            entry = retrieved.entry
+            layout = WindowLayout(RECENT, with_memory=entry is not None)
+        else:
+            cameras, admitted, entry = self._exchange_states(f0, t), 0, None
+            layout = WindowLayout.ordinary(f0)
         batch = dict(
             self.round_batch,
-            latents=self.store[None].clone(),
+            latents=self.store[None],
             window_target_start=torch.tensor([f0]),
             window_c2w=cameras[None].float(),
         )
@@ -432,30 +585,31 @@ class Rollout:
             batch.update(self._retrieved_frames(self.known.blocks[entry.block], t))
         batch[ROUND_CONTINUOUS_COLUMNS_KEY] = self.continuous_rows
         if self.closed is not None:
-            batch = self.closed.visibility.for_block(f0, batch, self.store)
-        layout = WindowLayout(RECENT, with_memory=entry is not None)
+            batch = self.closed.visibility.for_block(f0, batch, self.store, recent=layout.recent)
         window, cameras_of_window = gather_window(batch, layout)
-        rays = cameras_of_window.conditions(self.device)
+        rays = cameras_of_window.conditions(self.device) if self.scene_state else {}
         inputs = self._inputs(window, rays)
         context = layout.target_positions[0]
         ranges = layout.context_ranges
         self.sampler.cache.reset()
+        noise = None  # a clean context draws none
+        if self.sampler.context_noise:
+            noise = paired_context_noise(
+                self.cfg.run.seed, self._block_key(f0), len(ranges), RECENT // BLOCK
+            )
+        for replica in self.replicas:  # in parallel, from the same inputs and noise
+            replica.prefill(inputs.latents[:, :context], inputs.conditions, ranges, noise)
         self.sampler.prefill_context(
-            inputs.latents[:, :context],
-            inputs.conditions,
-            ranges=ranges,
-            context_write_noise=paired_context_noise(
-                self.cfg.run.seed, f0, len(ranges), RECENT // BLOCK
-            ),
+            inputs.latents[:, :context], inputs.conditions, ranges=ranges, context_write_noise=noise
         )
         read = BlockRead(
             t_target=t,
             admitted=admitted,
             window_frames=layout.num_frames,
             entry=None if entry is None else (entry.owner, int(entry.t_first)),
-            coverage=int(retrieved.coverage),
-            missing=int(retrieved.n_missing),
-            candidates=int(retrieved.n_candidates),
+            coverage=0 if retrieved is None else int(retrieved.coverage),
+            missing=0 if retrieved is None else int(retrieved.n_missing),
+            candidates=0 if retrieved is None else int(retrieved.n_candidates),
         )
         return PreparedBlock(inputs.conditions, context, cameras, window, rays, read)
 
@@ -482,10 +636,13 @@ class Rollout:
         )
         return inputs
 
-    def _at_cut(self, prepared: PreparedBlock, controls: BlockControls | None) -> PreparedBlock:
+    def _at_cut(
+        self, f0: int, prepared: PreparedBlock, controls: BlockControls | None
+    ) -> PreparedBlock:
         """The prepared block at its controls' cut: the block's ``controls`` (``None``: the recorded
         ones, already in the window) written into the rows of its target frames, in the window's
-        batch and in its conditions."""
+        batch and in its conditions. What a live block changes besides its controls is
+        ``LiveRollout._at_cut``'s."""
         if controls is None:
             return prepared
         rows = -VIDEO_FRAMES_PER_BLOCK
@@ -495,7 +652,12 @@ class Rollout:
             conditions=_with_controls(prepared.conditions, controls, first_row=rows),
         )
 
-    def _denoise_on_window(self, f0: int, prepared: PreparedBlock) -> torch.Tensor:
+    def _denoise_on_window(
+        self,
+        f0: int,
+        prepared: PreparedBlock,
+        on_step: Callable[[int, torch.Tensor], None] | None = None,
+    ) -> torch.Tensor:
         """The 4 denoising steps of a prepared window at its cut (:meth:`_at_cut`)."""
 
         def retest(x0: torch.Tensor) -> Mapping[str, Any]:
@@ -509,11 +671,31 @@ class Rollout:
             prepared.conditions,
             frame_offset=prepared.context,
             retest=None if self.closed is None else retest,
+            on_step=on_step,
+        )
+
+    def denoise_on(self, replica: GeneratorReplica, f0: int, rng: torch.Tensor) -> torch.Tensor:
+        """Block ``f0`` of the recorded controls (no closed loop), denoised and not yet committed,
+        denoised again on ``replica`` from the re-noise state ``rng`` its denoising began with: on
+        the same inputs, the same x0 where the cards run the same kernels (the warm-up's check of a
+        replica, ``Client.replicas_equal``).
+
+        Returns:
+            Tensor: x0 ``[1, 4, 48, 24, 42]`` float32 on the replica's card.
+        """
+        if self.closed is not None or self.prepared is None:
+            raise RuntimeError("only a block of the recorded controls, before its commit")
+        replica.prefilled()
+        replica.rng.set_state(rng)
+        return replica.sampler.denoise(
+            self._entry_noise(f0).to(replica.device),
+            replica.conditions(self.prepared.conditions),
+            frame_offset=self.prepared.context,
         )
 
     # ------------------------------------------------------------------------------- publishing
     def _publish(self, f0: int, prepared: PreparedBlock | None) -> None:
-        """Publish the finished block as a memory entry.
+        """Publish the finished block as a memory entry (with scene state).
 
         In the closed loop the first six blocks are published after the last of them, with the
         cameras as predicted then.
@@ -528,6 +710,8 @@ class Rollout:
                 self._publish_block(first, cameras)
 
     def _publish_block(self, f0: int, cameras: torch.Tensor) -> None:
+        if not self.scene_state:
+            return
         self.world_state.publish_block(
             window_start=self.start_frame, f0=f0, latents=self.store[f0 : f0 + BLOCK]
         )

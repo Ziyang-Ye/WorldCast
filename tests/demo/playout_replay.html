@@ -1,0 +1,74 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>playout replay</title>
+<pre id="out">running</pre>
+<script type="application/json" id="data">__DATA__</script>
+<script type="module">
+// The page's playout (stream.js) on a simulated clock, in two kinds of runs. A trace is a session: when every frame
+// arrived (ms, from the first), its index, whether it starts its block, its version and whether it was sent again (a
+// frame may come again), and the worker's welcome (fps, frames per block, buffer, backlog). The display is asked for a frame every 1000 / hz ms; `slow` [ms, period]: for that long from
+// the first arrival, every `period` ms instead (a display that cannot keep up); `away` [from, to]: not at all
+// between these times from the first arrival (a hidden page), while frames go on arriving. The decode of a frame is
+// taken as instant. The result of a trace: when each frame was shown and its version, how many frames were dropped, how
+// often the display held, and the interval the playout measured at which the display shows frames (ms) after each frame
+// it showed.
+// A rule is one call of the drop at a block's first frame: `ahead` frames wait before it and the display shows its
+// frames `every` ms apart; the result is how many frames were dropped. In order: what InOrder hands on of four decodes
+// that settle in reverse order, the third failing.
+import { InOrder, Playout } from './stream.js';
+
+const out = { traces: {}, rules: [] };
+try {
+  const data = JSON.parse(document.getElementById('data').textContent);
+  for (const [name, trace] of Object.entries(data.traces)) {
+    const frames = [...trace.arrivals].sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+    const play = new Playout(1000 / trace.fps, trace.per_block, trace.buffer, trace.backlog, trace.margin);
+    const shown = {};
+    const versions = {};
+    const every = [];
+    let dropped = 0;
+    let i = 0;
+    let now = frames[0][0];
+    const end = frames[frames.length - 1][0] + 5000;
+    while (now < end) {
+      while (i < frames.length && frames[i][0] <= now) {
+        const header = { k: frames[i][1], f: frames[i][2], v: frames[i][3] ?? 0, r: frames[i][4] ?? 0 };
+        dropped += play.add({ header, recv: frames[i][0] }).length;
+        i += 1;
+      }
+      const away = trace.away && trace.away[0] <= now - frames[0][0] && now - frames[0][0] < trace.away[1];
+      const frame = away ? null : play.take(now);
+      if (frame) {
+        shown[frame.header.k] = now;
+        versions[frame.header.k] = frame.header.v;
+        every.push(play.every);
+      }
+      const slow = trace.slow && now - frames[0][0] < trace.slow[0];
+      now += slow ? trace.slow[1] : 1000 / trace.hz;
+    }
+    out.traces[name] = { shown, versions, dropped, holds: play.holds.length, every };
+  }
+  for (const rule of data.rules) {
+    const play = new Playout(1000 / rule.fps, rule.per_block, 1, rule.backlog, rule.margin);
+    play.every = rule.every;
+    for (let k = 0; k < rule.ahead; k += 1) play.add({ header: { k, f: false }, recv: 0 });
+    out.rules.push(play.add({ header: { k: rule.ahead, f: true }, recv: 0 }).length);
+  }
+  const order = new InOrder();
+  const settles = [];
+  const used = [];
+  for (const name of ['first', 'second', 'third', 'fourth']) {
+    const fails = name === 'third';
+    const pending = new Promise((resolve, reject) => {
+      settles.push(fails ? () => reject(new Error('a decode that fails')) : () => resolve(name));
+    });
+    order.push(pending, (value) => used.push(value));
+  }
+  for (const settle of [...settles].reverse()) settle();
+  await order.last;
+  out.inorder = used;
+} catch (error) {
+  out.error = `${error}`;
+}
+document.getElementById('out').textContent = JSON.stringify(out);
+</script>
