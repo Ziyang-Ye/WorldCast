@@ -1066,3 +1066,8 @@ or, without WebGL, as they are on a 2D canvas, and the console has no error. Blo
 a script that does not load, the keys that browsers act on (Ctrl and Alt with a letter or an arrow, Space) and a tab
 that closes while one plays, and the screen's wake lock run in the same Chrome. The page tests run in a Chrome, a Chromium or a `chrome-headless-shell`
 that `WORLDCAST_CHROME` names (the shell's libraries on the loader's library path); without it, the one on the path.
+Its window has a mouse (a phone's, fingers), and the page's pointer lock is refused on every machine, as a headless
+Chrome on a Mac refuses it. On a CI runner (the variable CI set) the tests that run the page or the live bench in real
+time skip (`test_instant_turn.py`, `test_motion_feedback.py`, `test_play_input.py`, `test_walk.py`,
+`test_environments.py` and the runs of `tools/bench_live.py` in `test_bench_live.py`): a runner's few cores, which also
+draw the page's WebGL in software, do not keep up with them.

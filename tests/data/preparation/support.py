@@ -112,13 +112,13 @@ def write_ticks(path: Path, seat: Seat) -> None:
 
 
 def write_video(path: Path, frames: int) -> None:
-    """A ``frames``-frame 32 fps H.264 recording of a brightening grey."""
+    """A ``frames``-frame 32 fps H.264 recording of a brightening grey that wraps round to black."""
     import imageio.v2 as imageio
 
     path.parent.mkdir(parents=True, exist_ok=True)
     writer = imageio.get_writer(str(path), fps=32, codec="libx264", quality=9, macro_block_size=1)
     for frame in range(frames):
-        writer.append_data(np.full((*VIDEO_SIZE, 3), 5 * frame + 20, np.uint8))
+        writer.append_data(np.full((*VIDEO_SIZE, 3), (5 * frame + 20) % 256, np.uint8))
     writer.close()
 
 

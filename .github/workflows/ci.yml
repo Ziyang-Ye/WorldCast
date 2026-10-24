@@ -14,14 +14,51 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  lint:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # no pip cache: the 3.11 test jobs keep theirs, which holds the extras this job does not install
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      # CPU-only torch first, so that the package's dependencies do not pull the CUDA build.
+      - name: Install torch (CPU)
+        run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - name: Install the lint tools at their pinned versions
+        run: pip install -e ".[lint]"
+      - name: black
+        run: black --check worldcast tools tests
+      - name: isort
+        run: isort --check-only worldcast tools tests
+      - name: flake8
+        run: flake8 worldcast tools tests
+
+  test:
+    name: test (${{ matrix.python-version }}, ${{ matrix.part }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
+      fail-fast: false
+      # The suite in five parts that run at once (the refresh tests alone take as long as the rest of inference);
+      # `other` is all that the first four leave, so that a new test folder runs.
       matrix:
         python-version: ["3.10", "3.11"]
+        part: [refresh, inference, demo, tools, other]
+        include:
+          - part: refresh
+            tests: tests/engine/inference/test_refresh.py
+          - part: inference
+            tests: tests/engine/inference --ignore=tests/engine/inference/test_refresh.py
+          - part: demo
+            tests: tests/demo
+          - part: tools
+            tests: tests/tools tests/docs
+          - part: other
+            tests: tests --ignore=tests/engine/inference --ignore=tests/demo --ignore=tests/tools --ignore=tests/docs
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -29,15 +66,11 @@ jobs:
       # CPU-only torch and torchvision; tests that need a GPU, the weights or the paper's data skip and say why.
       - name: Install torch (CPU)
         run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-      # The dev extra (the tests' dependencies, the lint tools at their pinned versions) and the extras of training
-      # and evaluation, without which the tests of data preparation, training and the metrics skip.
+      # The test extra and the extras of training and evaluation, without which the tests of data preparation,
+      # training and the metrics skip.
       - name: Install WorldCast
-        run: pip install -e ".[dev,train,eval]"
-      - name: black
-        run: black --check worldcast tools tests
-      - name: isort
-        run: isort --check-only worldcast tools tests
-      - name: flake8
-        run: flake8 worldcast tools tests
+        run: pip install -e ".[test,train,eval]"
+      # The tests that run the page or the live bench in real time skip here (CI is set): the runner's few cores do
+      # not keep up with them (they also draw the page's WebGL in software).
       - name: pytest
-        run: python -m pytest tests -q --tb=short
+        run: python -m pytest ${{ matrix.tests }} -q --tb=short --durations=15

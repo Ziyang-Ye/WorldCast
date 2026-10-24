@@ -11,7 +11,7 @@ newest frame's own pixels and nothing of it goes into the panorama; a frame that
 turn is drawn as it was generated. A turn of half a circle, either way, shows at once where the
 frames went round. Frames older than the panorama keeps them, or taken elsewhere, are not used, and
 with the setting off every frame is drawn as it was generated. The tests skip without Chrome or
-Chromium.
+Chromium, and on a CI runner (``CI`` set), which does not keep up with them in real time.
 
 ``WORLDCAST_TURN_VIDEO`` names a directory for the recording of a scripted session (an mp4 of the
 canvas) and stills of turns into what the view has and has not seen, for a person to look at.
@@ -30,7 +30,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from tests.demo.support import chrome_page, needs_chrome, recorded_play
+from tests.demo.support import chrome_page, needs_chrome, realtime, recorded_play
 from worldcast.data.controls import CONTROL_BUTTONS
 from worldcast.data.game import (
     ASPECT_TAN_RATIO,
@@ -41,7 +41,7 @@ from worldcast.data.game import (
 from worldcast.data.latents import FRAME_SIZE
 from worldcast.demo.inputs import INSPECT_WEAPONS
 
-pytestmark = needs_chrome
+pytestmark = [needs_chrome, realtime]
 
 HARNESS = Path(__file__).with_name("instant_turn.html")
 MOTION_HARNESS = Path(__file__).with_name("motion_play.html")

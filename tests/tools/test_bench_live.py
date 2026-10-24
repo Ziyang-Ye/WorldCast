@@ -11,6 +11,7 @@ import pytest
 import torch
 
 import tests.engine.inference.support as sw
+from tests.demo.support import realtime
 from tests.tools.support import load_tool, synthetic_round, write_config
 from worldcast.demo import latency
 from worldcast.demo.latency import SCRIPTS, display_times, input_script
@@ -68,6 +69,7 @@ def bench(tmp_path, monkeypatch):
     return arguments + ["--seed", "1"]
 
 
+@realtime
 @pytest.mark.parametrize(
     ("refresh", "fps", "seconds", "script"),
     # the tiny models take about 2 s a block on one CPU thread: a display at 4 fps (4 s a block)
@@ -128,6 +130,7 @@ def test_the_bench_measures_a_scripted_player_with_and_without_refresh(
         assert printed["view_gain"] == result["view_gain"]["turn"]["p50"]
 
 
+@realtime
 def test_the_bench_refreshes_on_two_cards_with_previews_and_the_swap(bench, tmp_path, capsys):
     """The client with a replica on a second card (of the CPU), previews of the first denoising
     step, newer versions of frames sent going again, a shorter lead, no gather and a margin of a
@@ -153,6 +156,7 @@ def test_the_bench_refreshes_on_two_cards_with_previews_and_the_swap(bench, tmp_
     assert printed["per_card"] == {card: c["refreshes"] for card, c in result["per_card"].items()}
 
 
+@realtime
 def test_the_bench_runs_the_demo_of_the_generator_trained_without_scene_state(
     tmp_path, monkeypatch, capsys
 ):

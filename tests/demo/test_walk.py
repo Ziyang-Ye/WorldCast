@@ -6,7 +6,8 @@ holds the walk button (``speed``) while a movement key (W, A, S, D; an arrow key
 player) or the left stick is held, and Shift, the key that runs, lets go of it; Shift alone holds
 nothing. The button changes with the key, in the sample that carries the key. With it off, Shift
 walks as it did. The key cap of Shift lights for the key, whatever the setting. The tests skip
-without Chrome or Chromium.
+without Chrome or Chromium, and on a CI runner (``CI`` set), which does not keep up with them in
+real time.
 """
 
 import asyncio
@@ -16,11 +17,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.demo.support import chrome_page, needs_chrome, recorded_play
+from tests.demo.support import chrome_page, needs_chrome, realtime, recorded_play
 from worldcast.data.controls import CONTROL_BUTTONS
 
 HARNESS = Path(__file__).with_name("play_input.html")
-pytestmark = needs_chrome
+pytestmark = [needs_chrome, realtime]
 
 BIT = {name: 1 << i for i, name in enumerate(CONTROL_BUTTONS)}
 FORWARD, BACK, LEFT, RIGHT, SPEED = (

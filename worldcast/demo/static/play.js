@@ -316,11 +316,15 @@ export function renderPlay(app, roomId) {
   // panel (PANEL_ROOM_PX) on neither side gives the panel the whole window and the frame rate and latency go under it
   // (the play view's `cramped`): the panel's list scrolls in a window too low for it, never its Play button.
   function placeCard() {
+    // A hidden overlay keeps its padding, so that a panel shown again in the same window is at once where it was: for a
+    // reader who asks for less motion every change is a transition (app.css), which shows the old padding for a frame.
+    if (overlay.hidden) return;
     const { top, bottom } = $('#stats').getBoundingClientRect();
     const beside = state.status === 'pause' && !touch;
     const under = beside && innerHeight - bottom >= PANEL_ROOM_PX;
     const over = beside && !under && top >= PANEL_ROOM_PX;
-    overlay.style.paddingTop = under ? `${Math.ceil(bottom) + CARD_MARGIN_PX}px` : '';
+    // Scrolled out of the window, they leave the panel at its edge: a negative padding is refused, the old one stays.
+    overlay.style.paddingTop = under ? `${Math.max(0, Math.ceil(bottom)) + CARD_MARGIN_PX}px` : '';
     overlay.style.paddingBottom = over ? `${Math.max(0, Math.ceil(innerHeight - top)) + CARD_MARGIN_PX}px` : '';
     play.classList.toggle('cramped', beside && !under && !over);
     hintScroll();
@@ -614,7 +618,17 @@ export function renderPlay(app, roomId) {
     placeCard();
   });
   resized.observe(play);
+  // The frame rate and latency, by which the breakdown and the pause panel are placed, also move while the play view
+  // keeps its size: in a narrow window the plate of who plays sits above them in the bar, and its line wrapping anew (a
+  // font that arrives, a clock that gains a digit) moves them; and the room beside them is the window's, which the play
+  // view's size does not follow where the page is taller than the window (the overlay's border box is the window).
+  // Placing the panels changes none of these boxes, so the observer never reports its own work.
+  resized.observe($('.bar'));
+  resized.observe(overlay, { box: 'border-box' });
   window.addEventListener('scroll', placeCard, { passive: true });     // a narrow window's page scrolls under the panel
+  // In a low window the play view, not the page, scrolls: a wheel over the frame rate and latency (above the overlay)
+  // scrolls it while paused.
+  play.addEventListener('scroll', placeCard, { passive: true });
   const hud = setInterval(() => {
     const s = stream.stats();
     $('#fps').textContent = s.fps;

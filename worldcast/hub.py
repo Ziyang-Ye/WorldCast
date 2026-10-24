@@ -241,7 +241,7 @@ def _hub_reachable() -> bool:
         HfApi().repo_info(REPOSITORY, timeout=_HUB_TIMEOUT_S)
     except HfHubHTTPError:  # an answer
         return True
-    except Exception:  # none: an error of the transport, requests' or httpx's by the version
+    except Exception:  # none: an error of the transport (requests, httpx or httpx2 by the version)
         return False
     return True
 
@@ -281,11 +281,13 @@ def _fetch_hub_file(repo: str, revision: str, name: str, repo_type: str, part: P
         FileNotFoundError: the repository, its revision or the file is not on the Hub (or not
             readable with the user's token).
     """
+    target = part.with_name(part.name.removesuffix(".part"))
     if not _hub_reachable():
-        raise _not_in_place([part.with_name(part.name.removesuffix(".part"))])
+        raise _not_in_place([target])
     from huggingface_hub import hf_hub_download
     from huggingface_hub.utils import (
         EntryNotFoundError,
+        LocalEntryNotFoundError,
         RepositoryNotFoundError,
         RevisionNotFoundError,
     )
@@ -295,6 +297,8 @@ def _fetch_hub_file(repo: str, revision: str, name: str, repo_type: str, part: P
             path = hf_hub_download(
                 repo, name, revision=revision, repo_type=repo_type, local_dir=scratch
             )
+        except LocalEntryNotFoundError:  # a subclass of EntryNotFoundError: the Hub was not reached
+            raise _not_in_place([target]) from None
         except (EntryNotFoundError, RepositoryNotFoundError, RevisionNotFoundError):
             raise FileNotFoundError(
                 f"{name} is not in {repo} at {revision} on the Hugging Face Hub"

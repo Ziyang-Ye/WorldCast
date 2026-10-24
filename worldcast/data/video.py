@@ -43,7 +43,8 @@ def load_video_window(
         import cv2
 
         capture = cv2.VideoCapture(str(video_path))
-        count = int(round(capture.get(cv2.CAP_PROP_FRAME_COUNT)))
+        # a video OpenCV cannot open has no frames: OpenCV 5 counts -1 of them, OpenCV 4 none
+        count = max(int(round(capture.get(cv2.CAP_PROP_FRAME_COUNT))), 0)
     if count != source_frames or start_frame + span > source_frames:
         raise RuntimeError(f"{video_path}: {count} frames, expected {source_frames}")
     if decord is not None:

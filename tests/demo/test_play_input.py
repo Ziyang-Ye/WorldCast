@@ -13,8 +13,9 @@ turned since the last sample, pitch then yaw (yaw > 0 turns left, pitch > 0 look
 turns the view as far as it moves, as in the game: its turn is sent whole, with no cap, but for the
 first movement after the pointer lock takes hold; the arrow keys and the sticks turn at a rate, at
 most the maximum turn speed, so the samples' turn is checked against those numbers, frame by
-frame. A view turned for a time is checked to within the longest frame time the page saw. The
-tests skip without Chrome or Chromium.
+frame. A view turned for a time is checked to within the longest frame time the page saw. The tests
+skip without Chrome or Chromium, and on a CI runner (``CI`` set), which does not keep up with them
+in real time.
 """
 
 import asyncio
@@ -26,11 +27,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.demo.support import chrome_page, needs_chrome, recorded_play
+from tests.demo.support import chrome_page, needs_chrome, realtime, recorded_play
 from worldcast.data.controls import CONTROL_BUTTONS
 
 HARNESS = Path(__file__).with_name("play_input.html")
-pytestmark = needs_chrome
+pytestmark = [needs_chrome, realtime]
 
 BIT = {name: 1 << i for i, name in enumerate(CONTROL_BUTTONS)}
 CLOSE = pytest.approx

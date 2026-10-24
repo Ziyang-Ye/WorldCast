@@ -15,13 +15,14 @@ import json
 import os
 import queue
 import shutil
+import signal
 import socket
 import struct
 import subprocess
 import threading
 import time
 from collections.abc import Callable, Sequence
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 import numpy as np
@@ -48,6 +49,24 @@ MAC_CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 #: The environment variable that names the browser the page tests run in: a Chrome, a Chromium or a
 #: ``chrome-headless-shell`` (its libraries on ``LD_LIBRARY_PATH``).
 CHROME_ENV = "WORLDCAST_CHROME"
+#: The pointer and hover of a window with a mouse (a fine pointer that hovers): a headless Chrome on
+#: a machine with no mouse, as a Linux server, reports none.
+MOUSE = (
+    "--blink-settings=primaryPointerType=4,availablePointerTypes=4,"
+    "primaryHoverType=2,availableHoverTypes=2"
+)
+#: The pointer lock, refused on every machine as a headless Chrome on a Mac refuses it: the tests
+#: move a cursor, and a headless Chrome on Linux that grants the lock neither lets it go on Escape
+#: nor moves the locked pointer as far as the cursor went.
+NO_POINTER_LOCK = """Element.prototype.requestPointerLock = function requestPointerLock() {
+  setTimeout(() => document.dispatchEvent(new Event('pointerlockerror')));
+  return Promise.reject(new DOMException('The pointer cannot be locked.', 'WrongDocumentError'));
+};"""
+#: The tests that run the page or the live bench in real time: a CI runner (``CI`` set), whose few
+#: cores also draw the page's WebGL in software, does not keep up with them.
+realtime = pytest.mark.skipif(
+    bool(os.environ.get("CI")), reason="runs in real time, which a CI runner does not keep up with"
+)
 
 
 def find_chrome() -> str | None:
@@ -195,9 +214,9 @@ async def chrome_page(
 ):
     """A page open in a Chrome with a window of ``(width, height, device pixels per CSS pixel)``
     and software WebGL (``webgl`` false: no GPU, so no WebGL): a harness page (the HTML ``page``,
-    which links ``static/``), or ``url`` (a demo's); ``touch``: a phone's, whose pointer is coarse;
-    ``commands``: DevTools commands ``(method, params)`` run before the page loads (a user agent, a
-    media feature, a script to run first). Yields its :class:`ChromePage`."""
+    which links ``static/``), or ``url`` (a demo's); ``touch``: a phone's, whose pointer is coarse
+    (else a mouse's); ``commands``: DevTools commands ``(method, params)`` run before the page loads
+    (a user agent, a media feature, a script to run first). Yields its :class:`ChromePage`."""
     width, height, scale = window
     if url is None:
         (directory / "static").symlink_to(STATIC)
@@ -211,9 +230,14 @@ async def chrome_page(
         f"--remote-debugging-port={port}",
         "--use-mock-keychain",
         *gpu,
+        *([] if touch else [MOUSE]),
     ]
+    # its own process group, which ends with it: its helpers write to the profile until they go
     chrome = subprocess.Popen(
-        [CHROME, *chrome_args, "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        [CHROME, *chrome_args, "about:blank"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
     )
     try:
         async with ClientSession() as http:
@@ -237,12 +261,18 @@ async def chrome_page(
                     await chrome_page.call(
                         "Emulation.setTouchEmulationEnabled", enabled=True, maxTouchPoints=5
                     )
+                await chrome_page.call("Page.enable")  # without it no script runs before the page's
+                await chrome_page.call(
+                    "Page.addScriptToEvaluateOnNewDocument", source=NO_POINTER_LOCK
+                )
                 for method, params in commands:
                     await chrome_page.call(method, **params)
                 await chrome_page.call("Page.navigate", url=url)
                 yield chrome_page
     finally:
-        chrome.kill()
+        # a Chrome that exited, its helpers with it (a Mac refuses the signal until it is reaped)
+        with suppress(ProcessLookupError, PermissionError):
+            os.killpg(chrome.pid, signal.SIGKILL)
         chrome.wait()
 
 

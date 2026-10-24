@@ -62,6 +62,15 @@ def test_the_scripts_are_revalidated_on_every_load():
     assert asyncio.run(script_headers()) == (200, "no-cache")
 
 
+def test_the_page_reads_no_user_agent_or_platform():
+    """The page is the same on every machine: it asks the browser for features, never for who it
+    is (a gamepad's id names the device, not the browser, and ``pad.js`` reads its vendor and
+    product)."""
+    names = ("userAgent", "navigator.platform", "navigator.vendor")
+    for name, text in SCRIPTS.items():
+        assert not any(n in text for n in names), name
+
+
 def test_the_page_acknowledges_each_frame_as_it_arrives():
     """The worker measures the browser's link by the acknowledgements and keeps the frames in
     flight within ``worker.max_inflight_ms`` of it (``test_worker.py``): the page acknowledges

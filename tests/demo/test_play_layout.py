@@ -71,6 +71,9 @@ GUESTS = [
 #: How the own position is known on every frame: what the breakdown shows and the bar does not.
 POSITION = "degraded"
 CLOSE = pytest.approx
+#: The page's next rendering update, when what a change of the window sets off (its resize
+#: observers) has run: a read before it can see the layout of the window before.
+RENDERED = "new Promise((done) => requestAnimationFrame(() => setTimeout(done)))"
 
 
 async def recorded_session() -> dict:
@@ -604,6 +607,7 @@ async def cross(setup: dict, directory: Path) -> dict:
                 size = dict(width=args[0], height=800, deviceScaleFactor=1, mobile=False)
                 await chrome.call("Emulation.setDeviceMetricsOverride", **size)
             await asyncio.sleep(0.4)
+            await chrome.eval(RENDERED)
             steps[name] = await chrome.eval("harness.panelStyle()")
             steps[name]["panel"] = (await chrome.eval("harness.state()"))["panel"]
 
@@ -681,6 +685,7 @@ async def sweep(setup: dict, directory: Path) -> dict[tuple[int, int], dict]:
                     40
                 ):  # the layout has settled when two reads agree, whatever the load
                     await asyncio.sleep(0.1)
+                    await chrome.eval(RENDERED)
                     read = await chrome.eval(SWEEP)
                     if read == report:
                         break

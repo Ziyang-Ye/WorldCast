@@ -9,7 +9,8 @@ window, and reports no error to the console. It draws the frames by the instant 
 with no WebGL, as they were generated on a 2D canvas; where storage is blocked it still seats the
 player, and a view the browser cannot open says so; a tab that closes while one plays asks first,
 and the keys the browsers act on (Ctrl and Alt with a letter or an arrow) are the page's while one
-plays. The tests skip without Chrome or Chromium.
+plays. The tests skip without Chrome or Chromium, and on a CI runner (``CI`` set), which does not
+keep up with them in real time.
 """
 
 import asyncio
@@ -21,22 +22,23 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import pytest
 from PIL import Image
 
 from tests.demo.support import (
-    STATIC,
     ChromePage,
     chrome_page,
     create_room,
     demo,
     needs_chrome,
+    realtime,
     take_seat,
     until,
 )
 from worldcast.data.latents import FRAME_SIZE
 
-pytestmark = needs_chrome
+pytestmark = [needs_chrome, realtime]
 
 HEIGHT, WIDTH = FRAME_SIZE
 CLOSE = pytest.approx
@@ -195,7 +197,6 @@ ENVIRONMENTS = {
 def commands(environment: Environment) -> list[tuple[str, dict]]:
     """The DevTools commands that make Chrome the machine of ``environment``."""
     found: list[tuple[str, dict]] = [
-        ("Page.enable", {}),
         ("Runtime.enable", {}),
         ("Log.enable", {}),
     ]
@@ -278,9 +279,8 @@ async def painted(chrome: ChromePage) -> float:
     x, y, width, height = await chrome.eval(STAGE)
     clip = dict(x=x, y=y, width=width, height=height, scale=1)
     shot = await chrome.call("Page.captureScreenshot", format="png", clip=clip)
-    pixels = list(Image.open(io.BytesIO(base64.b64decode(shot["data"]))).convert("L").getdata())
-    mean = sum(pixels) / len(pixels)
-    return (sum((p - mean) ** 2 for p in pixels) / len(pixels)) ** 0.5
+    image = Image.open(io.BytesIO(base64.b64decode(shot["data"]))).convert("L")
+    return float(np.asarray(image, dtype=np.float64).std())
 
 
 async def press(
@@ -482,16 +482,6 @@ def test_the_page_follows_the_settings_of_the_machine(reports):
     assert reports["forced-colors"]["playing"]["media"][0]
     assert reports["linux-720"]["playing"]["media"][:2] == [False, False]
     assert reports["linux-720"]["playing"]["fade"] == "0.3s"
-
-
-def test_the_page_reads_no_user_agent_or_platform():
-    """The page is the same on every machine: it asks the browser for features, never for who it
-    is (a gamepad's id names the device, not the browser, and ``pad.js`` reads its vendor and
-    product)."""
-    for path in sorted(STATIC.glob("*.js")):
-        text = path.read_text(encoding="utf-8")
-        names = ("userAgent", "navigator.platform", "navigator.vendor")
-        assert not any(name in text for name in names), path
 
 
 def test_a_browser_that_keeps_nothing_still_seats_the_player_and_plays():

@@ -349,7 +349,7 @@ def shipped_configs():
 
 
 @pytest.mark.parametrize(
-    "path, load", shipped_configs(), ids=lambda value: getattr(value, "name", "")
+    "path, load", list(shipped_configs()), ids=lambda value: getattr(value, "name", "")
 )
 def test_every_shipped_config_loads(path, load):
     load()

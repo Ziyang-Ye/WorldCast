@@ -11,7 +11,8 @@ A key let go before its frame falls the same way, and the arrow keys and the mou
 as before, with no move. The Motion feedback setting in the pause panel is off by default (every
 frame is drawn as it was generated), runs here at Light, and is kept in localStorage. The browser
 has no WebGL: the frames are drawn on the 2D canvas (the instant turn draws the feedback's move
-alike, ``test_instant_turn.py``). The tests skip without Chrome or Chromium.
+alike, ``test_instant_turn.py``). The tests skip without Chrome or Chromium, and on a CI runner
+(``CI`` set), which does not keep up with them in real time.
 """
 
 import asyncio
@@ -21,11 +22,11 @@ from pathlib import Path
 
 import pytest
 
-from tests.demo.support import chrome_page, needs_chrome, recorded_play
+from tests.demo.support import chrome_page, needs_chrome, realtime, recorded_play
 from worldcast.data.controls import CONTROL_BUTTONS
 
 HARNESS = Path(__file__).with_name("motion_play.html")
-pytestmark = needs_chrome
+pytestmark = [needs_chrome, realtime]
 
 BIT = {name: 1 << i for i, name in enumerate(CONTROL_BUTTONS)}
 #: The caps at the Light setting (``static/feedback.js``) and the ramp time (s).

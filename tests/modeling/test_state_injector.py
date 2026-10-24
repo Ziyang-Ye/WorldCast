@@ -53,8 +53,8 @@ def test_the_delta_is_the_convolution_of_each_frame_in_token_order():
         delta = injector.delta(field)
         frame = injector.proj(torch.nn.functional.silu(injector.stem(field[1, 2:3])))[0]
     assert delta.shape == (2, 3 * 24, 16)
-    # token (row 3, column 4) of frame 2
-    assert torch.equal(delta[1, 2 * 24 + 3 * 6 + 4], frame[:, 3, 4])
+    # token (row 3, column 4) of frame 2; the CPU may sum a batch of frames in another order
+    torch.testing.assert_close(delta[1, 2 * 24 + 3 * 6 + 4], frame[:, 3, 4], rtol=0, atol=1e-5)
 
 
 def test_the_injector_adds_the_delta_to_each_copy_of_the_calls_frames():

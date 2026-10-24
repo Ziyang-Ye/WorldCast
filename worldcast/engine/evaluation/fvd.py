@@ -218,7 +218,8 @@ def _read_recording(path: str | Path, count: int, source_frames: int) -> np.ndar
     import cv2
 
     capture = cv2.VideoCapture(str(path))
-    total = int(round(capture.get(cv2.CAP_PROP_FRAME_COUNT)))
+    # a video OpenCV cannot open has no frames: OpenCV 5 counts -1 of them, OpenCV 4 none
+    total = max(int(round(capture.get(cv2.CAP_PROP_FRAME_COUNT))), 0)
     if total != source_frames:
         raise RuntimeError(f"{path}: {total} frames, expected {source_frames}")
     frames, index = [], 0

@@ -237,8 +237,10 @@ def test_a_tiny_decoder_that_cannot_be_fetched_is_named_after_the_paths_file(
 def test_the_hubs_library_offline(tmp_path, monkeypatch):
     """The Hub's library itself, never asked to reach the Hub: a file in the local directory, or
     in the Hub's cache, is taken; a file in neither is named, the case's file in place."""
-    huggingface_hub = pytest.importorskip("huggingface_hub")
-    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(tmp_path / "cache"))
+    constants = pytest.importorskip("huggingface_hub.constants")
+    file_download = pytest.importorskip("huggingface_hub.file_download")
+    for module in (constants, file_download):  # before 0.25 the library reads file_download's copy
+        monkeypatch.setattr(module, "HF_HUB_CACHE", str(tmp_path / "cache"), raising=False)
     monkeypatch.setattr(hub, "_hub_reachable", lambda: False)
     local = tmp_path / "weights" / "worldcast"
     (local / "stage.safetensors").parent.mkdir(parents=True)
@@ -265,8 +267,20 @@ def test_the_hubs_library_offline(tmp_path, monkeypatch):
 
 
 class ConnectError(Exception):
-    """An error of httpx's transport, which huggingface_hub 1 and later raise without a
-    connection."""
+    """An error of the transport of httpx (huggingface_hub 1) or httpx2 (2), which they raise
+    without a connection."""
+
+
+def answer_error(error: type[Exception], status: int) -> Exception:
+    """``error``, an HTTP error of huggingface_hub, as it raises one for the Hub's answer
+    ``status``: with the answer, a response of httpx (huggingface_hub 1) or httpx2 (2), which
+    huggingface_hub 0, on requests, does without."""
+    base = next(cls for cls in error.__mro__ if cls.__name__ == "HTTPError")
+    library = sys.modules[base.__module__.partition(".")[0]]
+    if library.__name__ == "requests":
+        return error(f"{status} Client Error")
+    request = library.Request("GET", f"https://huggingface.co/api/models/{hub.REPOSITORY}")
+    return error(f"{status} Client Error", response=library.Response(status, request=request))
 
 
 def test_whether_the_hub_answers_is_asked_once_with_one_request(monkeypatch):
@@ -285,7 +299,7 @@ def test_whether_the_hub_answers_is_asked_once_with_one_request(monkeypatch):
 
     for error, answers in (
         (None, True),
-        (HfHubHTTPError("401 Client Error"), True),  # an answer, if not the one hoped for
+        (answer_error(HfHubHTTPError, 401), True),  # an answer, if not the one hoped for
         # the transport errors of huggingface_hub 0 are OSErrors
         (ConnectionError("Name or service not known"), False),
         (TimeoutError("Connection to huggingface.co timed out"), False),
@@ -354,18 +368,28 @@ def test_the_metric_weights_come_from_their_sources(tmp_path, stub_hub, monkeypa
 
 
 def test_a_metric_weight_not_on_the_hub_or_offline_is_named(tmp_path, stub_hub, monkeypatch):
+    """A repository the Hub does not have; a Hub that answered its check and not the download
+    (the library finds no copy); a Hub that does not answer."""
     huggingface_hub = pytest.importorskip("huggingface_hub")
-    from huggingface_hub.utils import RepositoryNotFoundError
+    from huggingface_hub.utils import LocalEntryNotFoundError, RepositoryNotFoundError
 
     stub_weights(monkeypatch)
 
     def missing(repo, name, **kwargs):
-        raise RepositoryNotFoundError(f"404: {repo}")
+        raise answer_error(RepositoryNotFoundError, 404)
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", missing)
     message = "detector/yolo11x_cs2_player.pt is not in ZiyangYe/WorldCast at 7f3f1c84"
     with pytest.raises(FileNotFoundError, match=message):
         hub.download_metric_weights(tmp_path, ["detector"])
+
+    def lost(repo, name, **kwargs):
+        raise LocalEntryNotFoundError(f"no local copy of {name}")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", lost)
+    with pytest.raises(ConnectionError) as offline:
+        hub.download_metric_weights(tmp_path, ["gim_dkm"])
+    assert str(offline.value) == offline_message(str(tmp_path.resolve() / "gim_dkm_100h.ckpt"))
     monkeypatch.setattr(hub, "_hub_reachable", lambda: False)
     with pytest.raises(ConnectionError) as offline:
         hub.download_metric_weights(tmp_path, ["i3d"])

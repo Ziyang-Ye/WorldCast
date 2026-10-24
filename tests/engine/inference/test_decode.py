@@ -169,8 +169,8 @@ def test_an_mp4_that_lost_frames_is_not_written(tmp_path, monkeypatch, lossy_ffm
 
 def test_the_check_decodes_the_frames_the_index_lists(tmp_path, monkeypatch, lossy_ffmpeg):
     """An mp4 that lost its frames from the middle on and whose index is whole: a copy of its
-    stream (imageio-ffmpeg's frame count before 0.5) counts every frame, the decode stops at the
-    first frame lost."""
+    stream (how imageio-ffmpeg counted frames before 0.5) lists every frame, the decode stops at
+    the first frame lost."""
     imageio_ffmpeg = pytest.importorskip("imageio_ffmpeg")
     import imageio.v2 as imageio
 
@@ -181,9 +181,10 @@ def test_the_check_decodes_the_frames_the_index_lists(tmp_path, monkeypatch, los
         writer.append_data(frame)
     writer.close()
     monkeypatch.delenv("IMAGEIO_FFMPEG_EXE")
-    copy = [imageio_ffmpeg.get_ffmpeg_exe(), "-i", path, "-map", "0:v:0", "-c", "copy"]
-    counted = subprocess.run([*copy, "-f", "null", "-"], capture_output=True, text=True).stderr
-    assert re.findall(r"frame=\s*(\d+)", counted)[-1] == "40"
+    ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+    copy = [ffmpeg, "-v", "error", "-i", path, "-map", "0:v:0", "-c", "copy", "-f", "framemd5"]
+    listed = subprocess.run([*copy, "-"], capture_output=True, text=True).stdout
+    assert len([line for line in listed.splitlines() if not line.startswith("#")]) == 40
     decoded, error = D.mp4_decoded_frames(path)
     assert 0 < decoded < 40
     assert re.fullmatch(r"\[h264 @ 0x[0-9a-f]+\] Invalid NAL unit size \(0 > \d+\)\.", error)
