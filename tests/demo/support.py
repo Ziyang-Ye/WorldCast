@@ -427,27 +427,32 @@ class Browser:
         dyaw = self.turn if hold else 0.0
         for seq in range(1, 1 << 30):
             sample = {"t": "in", "q": seq, "b": hold, "dp": 0.0, "dy": dyaw, "w": 2}
-            await self.ws.send_json(sample)
+            try:
+                await self.ws.send_json(sample)
+            except ConnectionError:  # the worker closed the socket: the session is over
+                return
             self.sent.append(seq)
             await asyncio.sleep(0.016)
 
     async def _receive(self) -> None:
-        async for msg in self.ws:
-            if msg.type == WSMsgType.BINARY:
-                if self.mbit is not None:
-                    await asyncio.sleep(8 * len(msg.data) / (self.mbit * 1e6))
-                header, jpeg = unpack(msg.data)
-                assert jpeg[:2] == b"\xff\xd8"
-                self.frames.append(header)
-                self.jpegs.append(jpeg)
-                self.arrived.append(time.monotonic())
-                await self.ws.send_json({"t": "ack", "r": header["k"]})
-            elif msg.type == WSMsgType.TEXT:
-                data = msg.json()
-                if data["t"] == "ended":
-                    self.ended = data["message"]
-                elif data["t"] == "roster":
-                    self.rosters.append([p["slot"] for p in data["roster"]])
+        # the worker closed the socket: an ack, or the pong that aiohttp sends on its own, meets it
+        with suppress(ConnectionError):
+            async for msg in self.ws:
+                if msg.type == WSMsgType.BINARY:
+                    if self.mbit is not None:
+                        await asyncio.sleep(8 * len(msg.data) / (self.mbit * 1e6))
+                    header, jpeg = unpack(msg.data)
+                    assert jpeg[:2] == b"\xff\xd8"
+                    self.frames.append(header)
+                    self.jpegs.append(jpeg)
+                    self.arrived.append(time.monotonic())
+                    await self.ws.send_json({"t": "ack", "r": header["k"]})
+                elif msg.type == WSMsgType.TEXT:
+                    data = msg.json()
+                    if data["t"] == "ended":
+                        self.ended = data["message"]
+                    elif data["t"] == "roster":
+                        self.rosters.append([p["slot"] for p in data["roster"]])
 
     async def show_markers(self, on: bool = True) -> None:
         """Ask the worker for the field's markers in every frame, or no more (``on``), as the

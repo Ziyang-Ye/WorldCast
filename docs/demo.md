@@ -1024,7 +1024,7 @@ in order, a frame period apart, the block's live state leaves once with its newe
 the decode of the block's frames over), refreshes never overlap nor run into the next block's step, and the send queue
 replaces only frames not yet sent, or with `play.swap_sent` frames the page has not shown, which it then sends again;
 with more cards a refresh waits for a free card, not for the one generated, and with `play.preview_step` a refresh's
-preview goes first, marked. The engine's client on two cards of the CPU (`tests/engine/inference/test_replicas.py`)
+preview goes first, marked; a refresh whose frames fail is logged, and the block's frames play on. The engine's client on two cards of the CPU (`tests/engine/inference/test_replicas.py`)
 prefills the replica as its own card, gives a refresh on either card the x0 and frames of a client without a replica,
 runs a refresh asked for during a block's first denoising beside it, shows only the newest version done and commits
 the newest cut, and gives a preview before its refresh's own frames. A

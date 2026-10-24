@@ -48,8 +48,8 @@ def unpack(data: bytes) -> tuple[dict, bytes]:
 
 
 async def send(ws: WebSocket | None, message: dict | bytes) -> None:
-    """Send a JSON message or a binary frame; a socket that is gone (``None``, closed, reset) drops
-    it."""
+    """Send a JSON message or a binary frame; a socket that is gone (``None``, closed, reset, lost)
+    drops it."""
     if ws is None or ws.closed:
         return
     try:
@@ -57,7 +57,7 @@ async def send(ws: WebSocket | None, message: dict | bytes) -> None:
             await ws.send_bytes(message)
         else:
             await ws.send_json(message)
-    except (ConnectionResetError, RuntimeError):
+    except (ConnectionError, RuntimeError):
         pass
 
 

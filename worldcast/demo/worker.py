@@ -1471,11 +1471,22 @@ class Worker:
                 frame = max(frame, first + frames - max(room, 0))
             return frame
 
+        def taken(task: asyncio.Task) -> None:  # the frames it did not replace stay the block's
+            s.refreshing.discard(task)
+            if not task.cancelled() and (error := task.exception()) is not None:
+                log.error(
+                    "room %s: player %d's refresh of block %d failed",
+                    s.room,
+                    s.seat.slot,
+                    first,
+                    exc_info=error,
+                )
+
         # asks at once, on the loop's thread
         requested = self.client.refresh(controls, switch, generated, self.cfg.play.preview_step)
         task = asyncio.create_task(self._refresh_frames(s, requested, entry, version))
         s.refreshing.add(task)
-        task.add_done_callback(s.refreshing.discard)
+        task.add_done_callback(taken)
 
     async def _refresh_frames(
         self, s: Session, requested: Iterator[LiveFrame], entry: RefreshTrace, version: int

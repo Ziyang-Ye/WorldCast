@@ -1072,6 +1072,7 @@ async def yields_nothing():
         room = await create_room(local, http)
         browser = await take_seat(local, http, room, 0)
         await until(lambda: browser.ended is not None, "the session to end")
+        await browser.close(bye=False)  # the worker closed its socket
         await until(lambda: not local.coordinator.rooms[room].players, "the seat to be free")
         second = await take_seat(local, http, room, 0)
         await until(lambda: len(second.frames) >= 8, "the worker to serve the next player")

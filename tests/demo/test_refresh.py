@@ -19,6 +19,7 @@
 
 import asyncio
 import copy
+import logging
 import threading
 import time
 import types
@@ -485,6 +486,27 @@ def test_without_refresh_a_press_waits_for_the_next_block():
     waits, firsts = latencies(browser, pressed)
     assert all(firsts) and not client.refreshed  # it shows from a block's first frame
     assert len(client.live) == len(client.steps)  # each block's live state at its cut
+
+
+class FailingRefresh(Refreshing):
+    """:class:`Refreshing` whose refreshes fail once their frames are taken."""
+
+    def _refresh(self, controls, switch, generated, preview_step=0):
+        yield from ()
+        raise RuntimeError("the refresh failed")
+
+
+def test_a_refresh_that_fails_is_said_and_the_blocks_play_on(caplog):
+    """A refresh whose frames fail leaves the block's frames as they are: the worker says so, and
+    a press shows from the next block, as without refresh."""
+    with caplog.at_level(logging.ERROR, logger=Worker.__module__):
+        browser, pressed, client, _ = asyncio.run(presses(True, count=2, client=FailingRefresh))
+    failed = [r for r in caplog.records if r.name == Worker.__module__]
+    assert failed and all("'s refresh of block " in r.getMessage() for r in failed)
+    assert all(isinstance(r.exc_info[1], RuntimeError) for r in failed)
+    assert client.asked and not client.refreshed
+    _, firsts = latencies(browser, pressed)
+    assert all(firsts)
 
 
 async def two_refreshing_players() -> tuple[list, list, Refreshing]:
